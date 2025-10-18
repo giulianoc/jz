@@ -29,8 +29,8 @@ target_link_directories(test_jz_parser
 target_link_libraries(test_jz_parser
 	PRIVATE
 		jz
-		Catch2
 		Catch2Main
+		Catch2
 )
 
 

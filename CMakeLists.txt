@@ -18,8 +18,7 @@ target_include_directories(test_jz_parser
 	PRIVATE
 		./src
 		"${NLOHMANN_INCLUDE_DIR}"
-		"${CATCH2_INCLUDE_DIR}/src"
-		"${CATCH2_INCLUDE_DIR}/build/generated-includes"
+		"${CATCH2_INCLUDE_DIR}"
 )
 
 target_link_directories(test_jz_parser

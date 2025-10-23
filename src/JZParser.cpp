@@ -1,27 +1,29 @@
-#include "jz_parser.hpp"
+#include "JZParser.hpp"
+#include "ToolManager.hpp"
 
-#include <cctype>
-#include <sstream>
-#include <vector>
-#include <optional>
-#include <variant>
 #include <algorithm>
+#include <cctype>
+#include <optional>
+#include <sstream>
+#include <stdexcept>
+#include <variant>
+#include <vector>
 
 using namespace std;
-using nlohmann::json;
+using ordered_json = nlohmann::ordered_json;
 
 namespace jz {
 
 // ---------- undefined sentinel ----------
 static const char UNDEF_KEY[] = "__jz_undefined__";
 
-json undefined() {
-    json s = json::object();
+ordered_json undefined() {
+    ordered_json s = ordered_json::object();
     s[UNDEF_KEY] = true;
     return s;
 }
 
-static bool is_undefined_sentinel(const json& j) {
+static bool is_undefined_sentinel(const ordered_json& j) {
     return j.is_object() && j.size() == 1 && j.contains(UNDEF_KEY) && j.at(UNDEF_KEY).is_boolean() && j.at(UNDEF_KEY).get<bool>() == true;
 }
 
@@ -371,23 +373,23 @@ string Processor::normalize_json5_to_json(const string& s) {
     return s3;
 }
 
-// ---------- Placeholder expression evaluation ----------
+// ---------- Placeholder expression evaluation + tools pipeline ----------
 
 namespace eval {
 
 struct Value {
     bool missing = false; // path not found
-    json j;
+    ordered_json j;
 
-    static Value from_json(json v) { return Value{false, std::move(v)}; }
-    static Value missing_value() { return Value{true, json(nullptr)}; }
+    static Value from_json(ordered_json v) { return Value{false, std::move(v)}; }
+    static Value missing_value() { return Value{true, ordered_json(nullptr)}; }
 };
 
 static bool is_undefined(const Value& v) {
     return !v.missing && is_undefined_sentinel(v.j);
 }
 
-// nullish for ?? means only missing OR undefined (per your request)
+// nullish for ?? means only missing OR undefined
 static bool is_nullish(const Value& v) {
     return v.missing || is_undefined(v);
 }
@@ -448,7 +450,7 @@ static bool eq_values(const Value& a, const Value& b) {
     if ((a.missing && is_undefined(b)) || (b.missing && is_undefined(a))) return true;
     if (is_undefined(a) && is_undefined(b)) return true;
 
-    // If both primitives and same type -> use json equality
+    // If both primitives and same type -> use ordered_json equality
     if (!a.missing && !is_undefined(a) && !b.missing && !is_undefined(b)) {
         if (a.j.type() == b.j.type()) {
             return a.j == b.j;
@@ -479,8 +481,8 @@ static optional<bool> relational_compare(const Value& a, const Value& b, char op
         switch (op) {
             case '<': return A < B;
             case '>': return A > B;
-            case 'l': return A <= B; // 'l' stands for <=
-            case 'g': return A >= B; // 'g' stands for >=
+            case 'l': return A <= B; // <=
+            case 'g': return A >= B; // >=
             default: return nullopt;
         }
     }
@@ -519,6 +521,11 @@ struct Token {
         T_RPAREN,  // )
         T_LBRACKET, // [
         T_RBRACKET, // ]
+        T_LBRACE,  // {
+        T_RBRACE,  // }
+        T_COMMA,   // ,
+        T_PIPE,    // |
+        T_HASH,    // #
         T_OR,      // ||
         T_AND,     // &&
         T_NOT,     // !
@@ -572,6 +579,11 @@ struct Lexer {
         if (c == ')') { ++i; return {Token::T_RPAREN, ")"}; }
         if (c == '[') { ++i; return {Token::T_LBRACKET, "["}; }
         if (c == ']') { ++i; return {Token::T_RBRACKET, "]"}; }
+        if (c == '{') { ++i; return {Token::T_LBRACE, "{"}; }
+        if (c == '}') { ++i; return {Token::T_RBRACE, "}"}; }
+        if (c == ',') { ++i; return {Token::T_COMMA, ","}; }
+        if (c == '|') { ++i; return {Token::T_PIPE, "|"}; } // single pipe for tool pipeline
+        if (c == '#') { ++i; return {Token::T_HASH, "#"}; } // tool marker
         if (c == '!') { ++i; return {Token::T_NOT, "!"}; }
         if (c == '>') { ++i; return {Token::T_GT, ">"}; }
         if (c == '<') { ++i; return {Token::T_LT, "<"}; }
@@ -656,10 +668,10 @@ struct Lexer {
 
 struct Parser {
     Lexer lex;
-    const json& data;
+    const ordered_json& data;
     Token cur;
 
-    explicit Parser(const string& expr, const json& d) : lex(expr), data(d) {
+    explicit Parser(const string& expr, const ordered_json& d) : lex(expr), data(d) {
         cur = lex.next();
     }
 
@@ -678,6 +690,29 @@ struct Parser {
             return true;
         }
         return false;
+    }
+
+    // utility: find matching brace position in lex.s starting at current lex.i (which is after the '{')
+    size_t find_matching_brace_pos() {
+        const string& s = lex.s;
+        size_t pos = lex.i; // points after '{'
+        int depth = 1;
+        bool in_str = false;
+        char delim = 0;
+        bool esc = false;
+        while (pos < s.size()) {
+            char c = s[pos++];
+            if (in_str) {
+                if (esc) { esc = false; continue; }
+                if (c == '\\') { esc = true; continue; }
+                if (c == delim) { in_str = false; delim = 0; continue; }
+            } else {
+                if (c == '"' || c == '\'') { in_str = true; delim = c; continue; }
+                if (c == '{') { depth++; continue; }
+                if (c == '}') { depth--; if (depth == 0) return pos - 1; }
+            }
+        }
+        throw JZError("Unterminated '{...}' block in tool context");
     }
 
     // Top-level
@@ -738,7 +773,7 @@ struct Parser {
             cur = lex.next();
             Value right = parse_relational();
             bool res = (op == Token::T_EQ) ? eq_values(left, right) : !eq_values(left, right);
-            left = Value::from_json(json(res));
+            left = Value::from_json(ordered_json(res));
         }
         return left;
     }
@@ -760,7 +795,7 @@ struct Parser {
             bool res = false;
             if (cmp.has_value()) res = cmp.value();
             else res = false; // if not comparable, treat as false
-            left = Value::from_json(json(res));
+            left = Value::from_json(ordered_json(res));
         }
         return left;
     }
@@ -771,9 +806,89 @@ struct Parser {
             match(Token::T_NOT);
             Value v = parse_unary();
             bool r = !is_truthy(v);
-            return Value::from_json(json(r));
+            return Value::from_json(ordered_json(r));
         }
-        return parse_primary();
+        return parse_pipeline();
+    }
+
+    // pipeline: primary (| #tool(...){...})*
+    Value parse_pipeline() {
+        Value left = parse_primary();
+        while (cur.type == Token::T_PIPE) {
+            match(Token::T_PIPE);
+            // expect tool invocation starting with '#'
+            if (cur.type != Token::T_HASH) {
+                throw JZError("Expected '#' before tool name in pipeline");
+            }
+            match(Token::T_HASH);
+            if (cur.type != Token::T_IDENTIFIER) {
+                throw JZError("Expected tool identifier after '#'");
+            }
+            string toolname = cur.text;
+            cur = lex.next();
+
+            // parse options: ( key = expr, ... )
+            ordered_json options = ordered_json::object();
+            if (cur.type == Token::T_LPAREN) {
+                match(Token::T_LPAREN);
+                // allow empty parentheses
+                while (cur.type != Token::T_RPAREN) {
+                    if (cur.type != Token::T_IDENTIFIER) {
+                        throw JZError("Expected option name in tool options");
+                    }
+                    string optname = cur.text;
+                    cur = lex.next();
+                    consume(Token::T_EQ, "'=' in tool option");
+                    // parse expression for the option value
+                    Value optval = parse_expr();
+                    options[optname] = optval.j;
+                    if (cur.type == Token::T_COMMA) {
+                        match(Token::T_COMMA);
+                        continue;
+                    } else if (cur.type == Token::T_RPAREN) {
+                        break;
+                    } else {
+                        // tolerate missing comma, break to avoid infinite loop
+                        break;
+                    }
+                }
+                consume(Token::T_RPAREN, "')' after tool options");
+            }
+
+            // parse optional context block { ... } raw (balanced) and attempt to parse to JSON5 -> ordered_json
+            ordered_json ctx = ordered_json::object();
+            if (cur.type == Token::T_LBRACE) {
+                // lexer current position is after '{' (lex.i). find matching '}' pos.
+                size_t block_start = lex.i; // position after '{'
+                size_t block_end = find_matching_brace_pos(); // position of matching '}' char
+                string raw_block = lex.s.substr(block_start, block_end - block_start);
+                // advance lexer index to position after '}'
+                lex.i = block_end + 1;
+                cur = lex.next();
+
+                // try to normalize and parse raw_block as jz fragment (JSON5 -> ordered_json)
+                try {
+                    string normalized = Processor::normalize_json5_to_json(raw_block);
+                    ordered_json parsed_block = ordered_json::parse(normalized);
+                    ctx = parsed_block;
+                } catch (...) {
+                    // parsing failed: provide raw string in ctx
+                    ctx = ordered_json::object();
+                    ctx["__raw_block__"] = raw_block;
+                }
+            }
+
+            // run tool
+            ordered_json in_val = left.j;
+            ordered_json out_val;
+            try {
+                out_val = ToolManager::instance().run_tool(toolname, in_val, options, ctx);
+            } catch (const std::exception& e) {
+                throw JZError(string("Tool '") + toolname + "' failed: " + e.what());
+            }
+            left = Value::from_json(std::move(out_val));
+        }
+        return left;
     }
 
     // Primary: literals, identifiers/paths, parenthesis
@@ -788,7 +903,7 @@ struct Parser {
             case Token::T_STRING: {
                 string s = cur.text;
                 cur = lex.next();
-                return Value::from_json(json(s));
+                return Value::from_json(ordered_json(s));
             }
             case Token::T_NUMBER: {
                 string n = cur.text;
@@ -796,18 +911,18 @@ struct Parser {
                 try {
                     if (n.find_first_of(".eE") != string::npos) {
                         double d = stod(n);
-                        return Value::from_json(json(d));
+                        return Value::from_json(ordered_json(d));
                     } else {
                         long long v = stoll(n);
-                        return Value::from_json(json(v));
+                        return Value::from_json(ordered_json(v));
                     }
                 } catch (...) {
-                    return Value::from_json(json(n));
+                    return Value::from_json(ordered_json(n));
                 }
             }
-            case Token::T_TRUE:  cur = lex.next(); return Value::from_json(json(true));
-            case Token::T_FALSE: cur = lex.next(); return Value::from_json(json(false));
-            case Token::T_NULL:  cur = lex.next(); return Value::from_json(json(nullptr));
+            case Token::T_TRUE:  cur = lex.next(); return Value::from_json(ordered_json(true));
+            case Token::T_FALSE: cur = lex.next(); return Value::from_json(ordered_json(false));
+            case Token::T_NULL:  cur = lex.next(); return Value::from_json(ordered_json(nullptr));
             case Token::T_UNDEFINED: {
                 cur = lex.next();
                 return Value::from_json(::jz::undefined());
@@ -819,7 +934,6 @@ struct Parser {
                 cur = lex.next();
                 while (cur.type == Token::T_DOT || cur.type == Token::T_LBRACKET) {
                     if (cur.type == Token::T_DOT) {
-                        // .identifier
                         match(Token::T_DOT);
                         if (cur.type != Token::T_IDENTIFIER) {
                             throw JZError("Expected identifier after '.' in path");
@@ -853,7 +967,7 @@ struct Parser {
 
     // Resolve path into Value (handles arrays indices)
     Value resolve_path(const vector<string>& parts) {
-        const json* curj = &data;
+        const ordered_json* curj = &data;
         for (const auto& p : parts) {
             bool is_index = !p.empty() && std::all_of(p.begin(), p.end(), ::isdigit);
             if (curj->is_array() && is_index) {
@@ -880,7 +994,7 @@ struct Parser {
     }
 };
 
-static json evaluate_expression(const string& expr, const json& data, bool& was_missing) {
+static ordered_json evaluate_expression(const string& expr, const ordered_json& data, bool& was_missing) {
     Parser p(expr, data);
     Value v = p.parse_expr();
     was_missing = v.missing;
@@ -889,13 +1003,13 @@ static json evaluate_expression(const string& expr, const json& data, bool& was_
 
 } // namespace eval
 
-// Helper: escape a text as a JSON string literal using nlohmann::json
+// Helper: escape a text as a JSON string literal using ordered_json
 static string to_json_string_literal(const string& text) {
-    return json(text).dump();
+    return ordered_json(text).dump();
 }
 
 // Helper: convert JSON value to plain text to be inserted into a template string
-static void append_value_for_template(string& acc, const json& val) {
+static void append_value_for_template(string& acc, const ordered_json& val) {
     if (val.is_null()) return;
     if (is_undefined_sentinel(val)) return; // treat undefined as empty text in templates
     if (val.is_string()) {
@@ -905,7 +1019,7 @@ static void append_value_for_template(string& acc, const json& val) {
     }
 }
 
-string Processor::replace_placeholders_impl(const string& s, const json& data) {
+string Processor::replace_placeholders_impl(const string& s, const ordered_json& data) {
     string out;
     out.reserve(s.size());
 
@@ -975,7 +1089,7 @@ string Processor::replace_placeholders_impl(const string& s, const json& data) {
                     string expr = s.substr(expr_start, expr_end - expr_start);
 
                     bool missing = false;
-                    json val = eval::evaluate_expression(expr, data, missing);
+                    ordered_json val = eval::evaluate_expression(expr, data, missing);
                     if (!missing && !val.is_null() && !is_undefined_sentinel(val)) {
                         append_value_for_template(acc, val);
                     }
@@ -992,7 +1106,7 @@ string Processor::replace_placeholders_impl(const string& s, const json& data) {
             }
 
             // Emit as a proper JSON string
-            out += json(acc).dump();
+            out += ordered_json(acc).dump();
             i = j - 1; // position on closing backtick
             continue;
         }
@@ -1060,7 +1174,7 @@ string Processor::replace_placeholders_impl(const string& s, const json& data) {
             if (j >= s.size()) throw JZError("Unterminated $(...) placeholder");
             string expr = s.substr(i + 2, j - (i + 2));
             bool missing = false;
-            json val = eval::evaluate_expression(expr, data, missing);
+            ordered_json val = eval::evaluate_expression(expr, data, missing);
             if (missing) {
                 // missing now treated as undefined sentinel
                 out += undefined().dump();
@@ -1081,19 +1195,19 @@ string Processor::replace_placeholders_impl(const string& s, const json& data) {
     return out;
 }
 
-string Processor::replace_placeholders(const string& s, const json& data) {
+string Processor::replace_placeholders(const string& s, const ordered_json& data) {
     return replace_placeholders_impl(s, data);
 }
 
-// ---------- Remove undefined sentinels from parsed JSON ----------
+// ---------- Remove undefined sentinels from parsed ordered_json ----------
 // UPDATED: Arrays now have undefined elements FILTERED OUT (removed) instead of converted to null.
-void Processor::remove_undefined_sentinels(json& j) {
+void Processor::remove_undefined_sentinels(ordered_json& j) {
     if (j.is_object()) {
         // Collect keys to erase to avoid modifying while iterating
         vector<string> to_erase;
         for (auto it = j.begin(); it != j.end(); ++it) {
             const string key = it.key();
-            json& val = it.value();
+            ordered_json& val = it.value();
             if (is_undefined_sentinel(val)) {
                 to_erase.push_back(key);
             } else {
@@ -1105,7 +1219,7 @@ void Processor::remove_undefined_sentinels(json& j) {
         }
     } else if (j.is_array()) {
         // New logic: remove elements that are sentinel undefined, recursively clean remaining elements.
-        json new_arr = json::array();
+        ordered_json new_arr = ordered_json::array();
         // new_arr.reserve(j.size());
         for (auto& el : j) {
             if (is_undefined_sentinel(el)) {
@@ -1122,20 +1236,22 @@ void Processor::remove_undefined_sentinels(json& j) {
 }
 
 // ---------- Public API ----------
-string Processor::to_json(const string& jz_input, const json& data) {
-    // 1) Rimuove commenti (supporta anche stringhe con backtick)
+// Modified: now returns ordered_json (ordered_json alias) instead of serialized string.
+// This version integrates the expression evaluator which supports tool pipelines.
+ordered_json Processor::to_json(const string& jz_input, const ordered_json& data) {
+    // 1) Remove comments (supports backtick strings)
     auto no_comments = remove_comments(jz_input);
-    // 2) Valuta placeholders e template string `...` con $(...)
+    // 2) Evaluate placeholders and template string `...` with $(...)
     auto with_values = replace_placeholders(no_comments, data);
-    // 3) Normalizza JSON5 -> JSON (singoli apici, chiavi non quotate, trailing comma)
+    // 3) Normalize JSON5 -> JSON (single quotes, unquoted keys, trailing commas)
     auto jsonish = normalize_json5_to_json(with_values);
 
     try {
-        auto j = json::parse(jsonish);
-        // 4) Rimuovi le proprietà marcate come undefined (sentinel)
-        //    e FILTRA gli elementi undefined dentro gli array
+        // 4) Parse
+        auto j = ordered_json::parse(jsonish);
+        // 5) Remove undefined sentinels and filter arrays
         remove_undefined_sentinels(j);
-        return j.dump();
+        return j;
     } catch (const std::exception& e) {
         ostringstream oss;
         oss << "Invalid JSON after JZ transform: " << e.what();

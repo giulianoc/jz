@@ -1,5 +1,5 @@
 #define CATCH_CONFIG_MAIN
-#include "jz_parser.hpp"
+#include "JZParser.hpp"
 #include <catch2/catch_all.hpp>
 #include <nlohmann/json.hpp>
 
@@ -385,7 +385,7 @@ TEST_CASE("Multiple placeholders adjacent and mixed types", "[adjacent]")
 TEST_CASE("Large array processing and performance sanity", "[performance]")
 {
 	json data;
-	json arr = json::array();
+	ordered_json arr = ordered_json::array();
 	for (int i = 0; i < 200; ++i)
 	{
 		if (i % 10 == 0)

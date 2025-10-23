@@ -1,6 +1,7 @@
 #include "StringTools.hpp"
 #include "../ToolManager.hpp"
 
+#include <iostream>
 #include <sstream>
 
 using namespace std;
@@ -16,6 +17,8 @@ void StringTools::init()
 }
 
 ordered_json StringTools::upper(const ordered_json& input,const ordered_json& options,const ordered_json& ctx) {
+	cerr << "upper:" << input.dump() << endl;
+	if (input.is_null()) return nullptr;
 	string s;
 	if (input.is_string()) s = input.get<string>();
 	else s = input.dump(); // TODO: dare eccezione perché ci aspettiamo una stringa?
@@ -24,6 +27,7 @@ ordered_json StringTools::upper(const ordered_json& input,const ordered_json& op
 }
 
 ordered_json StringTools::lower(const ordered_json& input,const ordered_json& options,const ordered_json& ctx) {
+	if (input.is_null()) return nullptr;
 	string s;
 	if (input.is_string()) s = input.get<string>();
 	else s = input.dump();
@@ -32,6 +36,7 @@ ordered_json StringTools::lower(const ordered_json& input,const ordered_json& op
 }
 
 ordered_json StringTools::capitalize(const ordered_json& input,const ordered_json& options,const ordered_json& ctx) {
+	if (input.is_null()) return nullptr;
 	string s;
 	if (input.is_string()) s = input.get<string>();
 	else s = input.dump();

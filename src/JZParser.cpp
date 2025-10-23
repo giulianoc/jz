@@ -1,12 +1,12 @@
+// cpp
 #include "JZParser.hpp"
 #include "ToolManager.hpp"
 
 #include <algorithm>
-#include <cctype>
+#include <iostream>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
-#include <variant>
 #include <vector>
 
 using namespace std;
@@ -386,7 +386,7 @@ struct Value {
 };
 
 static bool is_undefined(const Value& v) {
-    return !v.missing && is_undefined_sentinel(v.j);
+    return v.missing || is_undefined_sentinel(v.j);
 }
 
 // nullish for ?? means only missing OR undefined
@@ -535,7 +535,8 @@ struct Token {
         T_GT,      // >
         T_LT,      // <
         T_GTE,     // >=
-        T_LTE      // <=
+        T_LTE,     // <=
+        T_ASSIGN   // =     (single equals for tool options)
     } type;
     string text;
 };
@@ -587,6 +588,9 @@ struct Lexer {
         if (c == '!') { ++i; return {Token::T_NOT, "!"}; }
         if (c == '>') { ++i; return {Token::T_GT, ">"}; }
         if (c == '<') { ++i; return {Token::T_LT, "<"}; }
+
+        // single '=' (assignment / option separator)
+        if (c == '=') { ++i; return {Token::T_ASSIGN, "="}; }
 
         if (c == '"' || c == '\'') {
             char delim = c;
@@ -812,84 +816,92 @@ struct Parser {
     }
 
     // pipeline: primary (| #tool(...){...})*
-    Value parse_pipeline() {
-        Value left = parse_primary();
-        while (cur.type == Token::T_PIPE) {
-            match(Token::T_PIPE);
-            // expect tool invocation starting with '#'
-            if (cur.type != Token::T_HASH) {
-                throw JZError("Expected '#' before tool name in pipeline");
-            }
-            match(Token::T_HASH);
-            if (cur.type != Token::T_IDENTIFIER) {
-                throw JZError("Expected tool identifier after '#'");
-            }
-            string toolname = cur.text;
-            cur = lex.next();
+    // cpp
+	// Modified parse_pipeline() inside Parser in `thirdPartyLibraries/jz/src/JZParser.cpp`
+	Value parse_pipeline() {
+	    Value left = parse_primary();
+	    while (cur.type == Token::T_PIPE) {
+	        match(Token::T_PIPE);
+	        // expect tool invocation starting with '#'
+	        if (cur.type != Token::T_HASH) {
+	            throw JZError("Expected '#' before tool name in pipeline");
+	        }
+	        match(Token::T_HASH);
+	        if (cur.type != Token::T_IDENTIFIER) {
+	            throw JZError("Expected tool identifier after '#'");
+	        }
+	        string toolname = cur.text;
+	        cur = lex.next();
 
-            // parse options: ( key = expr, ... )
-            ordered_json options = ordered_json::object();
-            if (cur.type == Token::T_LPAREN) {
-                match(Token::T_LPAREN);
-                // allow empty parentheses
-                while (cur.type != Token::T_RPAREN) {
-                    if (cur.type != Token::T_IDENTIFIER) {
-                        throw JZError("Expected option name in tool options");
-                    }
-                    string optname = cur.text;
-                    cur = lex.next();
-                    consume(Token::T_EQ, "'=' in tool option");
-                    // parse expression for the option value
-                    Value optval = parse_expr();
-                    options[optname] = optval.j;
-                    if (cur.type == Token::T_COMMA) {
-                        match(Token::T_COMMA);
-                        continue;
-                    } else if (cur.type == Token::T_RPAREN) {
-                        break;
-                    } else {
-                        // tolerate missing comma, break to avoid infinite loop
-                        break;
-                    }
-                }
-                consume(Token::T_RPAREN, "')' after tool options");
-            }
+	        // parse options: ( key = expr, ... )
+	        ordered_json options = ordered_json::object();
+	        if (cur.type == Token::T_LPAREN) {
+	            match(Token::T_LPAREN);
+	            // allow empty parentheses
+	            while (cur.type != Token::T_RPAREN) {
+	                if (cur.type != Token::T_IDENTIFIER) {
+	                    throw JZError("Expected option name in tool options");
+	                }
+	                string optname = cur.text;
+	                cur = lex.next();
+	                consume(Token::T_ASSIGN, "'=' in tool option");
+	                // parse expression for the option value
+	                Value optval = parse_expr();
+	                options[optname] = optval.j;
+	                if (cur.type == Token::T_COMMA) {
+	                    match(Token::T_COMMA);
+	                    continue;
+	                } else if (cur.type == Token::T_RPAREN) {
+	                    break;
+	                } else {
+	                    // tolerate missing comma, break to avoid infinite loop
+	                    break;
+	                }
+	            }
+	            consume(Token::T_RPAREN, "')' after tool options");
+	        }
 
-            // parse optional context block { ... } raw (balanced) and attempt to parse to JSON5 -> ordered_json
-            ordered_json ctx = ordered_json::object();
-            if (cur.type == Token::T_LBRACE) {
-                // lexer current position is after '{' (lex.i). find matching '}' pos.
-                size_t block_start = lex.i; // position after '{'
-                size_t block_end = find_matching_brace_pos(); // position of matching '}' char
-                string raw_block = lex.s.substr(block_start, block_end - block_start);
-                // advance lexer index to position after '}'
-                lex.i = block_end + 1;
-                cur = lex.next();
+	        // parse optional context block { ... } raw (balanced) and attempt to parse to JSON5 -> ordered_json
+	        ordered_json ctx = ordered_json::object();
+	        if (cur.type == Token::T_LBRACE) {
+	            // lexer current position is after '{' (lex.i). find matching '}' pos.
+	            size_t block_start = lex.i; // position after '{'
+	            size_t block_end = find_matching_brace_pos(); // position of matching '}' char
+	            string raw_block = lex.s.substr(block_start, block_end - block_start);
+	            // advance lexer index to position after '}'
+	            lex.i = block_end + 1;
+	            cur = lex.next();
 
-                // try to normalize and parse raw_block as jz fragment (JSON5 -> ordered_json)
-                try {
-                    string normalized = Processor::normalize_json5_to_json(raw_block);
-                    ordered_json parsed_block = ordered_json::parse(normalized);
-                    ctx = parsed_block;
-                } catch (...) {
-                    // parsing failed: provide raw string in ctx
-                    ctx = ordered_json::object();
-                    ctx["__raw_block__"] = raw_block;
-                }
-            }
+	            // try to normalize and parse raw_block as jz fragment (JSON5 -> ordered_json)
+	            try {
+	                string normalized = Processor::normalize_json5_to_json(raw_block);
+	                ordered_json parsed_block = ordered_json::parse(normalized);
+	                ctx = parsed_block;
+	            } catch (...) {
+	                // parsing failed: provide raw string in ctx
+	                ctx = ordered_json::object();
+	                ctx["__raw_block__"] = raw_block;
+	            }
+	        }
 
-            // run tool
-            ordered_json in_val = left.j;
-            ordered_json out_val;
-            try {
-                out_val = ToolManager::instance().run_tool(toolname, in_val, options, ctx);
-            } catch (const std::exception& e) {
-                throw JZError(string("Tool '") + toolname + "' failed: " + e.what());
-            }
-            left = Value::from_json(std::move(out_val));
-        }
-        return left;
-    }
+	        // run tool only if input is not the undefined sentinel
+	    	if (toolname == "upper") cerr << "missing: " << left.missing << " - j:" << left.j.dump() << endl;
+	        if (is_undefined(left)) {
+	            // preserve undefined sentinel — do not call the tool(s)
+	            // left remains unchanged (still undefined)
+	        } else {
+	            ordered_json in_val = left.j;
+	            ordered_json out_val;
+	            try {
+	                out_val = ToolManager::instance().run_tool(toolname, in_val, options, ctx);
+	            } catch (const std::exception& e) {
+	                throw JZError(string("Tool '") + toolname + "' failed: " + e.what());
+	            }
+	            left = Value::from_json(std::move(out_val));
+	        }
+	    }
+	    return left;
+	}
 
     // Primary: literals, identifiers/paths, parenthesis
     Value parse_primary() {

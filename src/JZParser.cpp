@@ -885,7 +885,6 @@ struct Parser {
 	        }
 
 	        // run tool only if input is not the undefined sentinel
-	    	if (toolname == "upper") cerr << "missing: " << left.missing << " - j:" << left.j.dump() << endl;
 	        if (is_undefined(left)) {
 	            // preserve undefined sentinel — do not call the tool(s)
 	            // left remains unchanged (still undefined)

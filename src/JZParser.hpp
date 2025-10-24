@@ -11,7 +11,23 @@ using ordered_json = nlohmann::ordered_json;
 namespace jz {
 
 struct JZError : public runtime_error {
-	using runtime_error::runtime_error;
+	explicit JZError(const string& msg, const size_t line_ = 0, const size_t col_ = 0)
+		: runtime_error(msg), line(line_), col(col_) {
+		//TODO: full_msg = std::format("{} at line {} col {}", msg, line, col);
+		full_msg = msg;
+	}
+
+	[[nodiscard]] size_t line_no() const noexcept { return line; }
+	[[nodiscard]] size_t col_no()  const noexcept { return col; }
+
+	[[nodiscard]] const char* what() const noexcept override {
+		return full_msg.c_str();
+	}
+
+private:
+	size_t line = 0;
+	size_t col  = 0;
+	std::string full_msg;
 };
 
 // Restituisce un valore JSON sentinel che indica "undefined" per JZ.

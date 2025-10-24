@@ -7,10 +7,9 @@ using namespace std;
 using nlohmann::json;
 
 // Helper to run JZ processor and parse result
-static json run(const string &jz_input, const json &data)
+static ordered_json run(const string &jz_input, const json &data)
 {
-	string out = jz::Processor::to_json(jz_input, data);
-	return json::parse(out);
+	return  jz::Processor::to_json(jz_input, data);
 }
 
 TEST_CASE("Basic standalone placeholder substitution", "[placeholder]")

@@ -17,7 +17,7 @@ void StringTools::init()
 }
 
 ordered_json StringTools::upper(const ordered_json& input,const ordered_json& options,const ordered_json& ctx) {
-	cerr << "upper:" << input.dump() << endl;
+	// cerr << "upper:" << input.dump() << endl;
 	if (input.is_null()) return nullptr;
 	string s;
 	if (input.is_string()) s = input.get<string>();

@@ -8,6 +8,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+#include <format>
 
 using namespace std;
 using ordered_json = nlohmann::ordered_json;
@@ -1264,9 +1265,7 @@ ordered_json Processor::to_json(const string& jz_input, const ordered_json& data
         remove_undefined_sentinels(j);
         return j;
     } catch (const std::exception& e) {
-        ostringstream oss;
-        oss << "Invalid JSON after JZ transform: " << e.what();
-        throw JZError(oss.str());
+        throw JZError(std::format("Invalid JSON after JZ transform: {}\n{}", e.what(), jsonish));
     }
 }
 

@@ -1,6 +1,6 @@
 #include <format>
 #include <chrono>
-#include "../ToolManager.hpp"
+#include "../ToolsManager.hpp"
 #include "DateTools.hpp"
 
 using namespace std;
@@ -9,7 +9,7 @@ using namespace jz;
 
 void DateTools::init()
 {
-	ToolManager& tm = ToolManager::instance();
+	ToolsManager& tm = ToolsManager::instance();
 	tm.register_tool("dateFormat", dateFormat);
 }
 

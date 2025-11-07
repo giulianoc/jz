@@ -1,5 +1,5 @@
 #include "StringTools.hpp"
-#include "../ToolManager.hpp"
+#include "../ToolsManager.hpp"
 
 #include <iostream>
 #include <sstream>
@@ -9,7 +9,7 @@ using namespace jz;
 
 void StringTools::init()
 {
-	ToolManager& tm = ToolManager::instance();
+	ToolsManager& tm = ToolsManager::instance();
 	// register default tools: upper, lower, capitalize
 	tm.register_tool("upper", upper);
 	tm.register_tool("lower", lower);

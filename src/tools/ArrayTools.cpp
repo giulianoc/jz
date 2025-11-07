@@ -1,5 +1,5 @@
 #include "ArrayTools.hpp"
-#include "../ToolManager.hpp"
+#include "../ToolsManager.hpp"
 
 #include <sstream>
 
@@ -7,7 +7,7 @@ using namespace std;
 using namespace jz;
 
 void ArrayTools::init() {
-    ToolManager &tm = ToolManager::instance();
+    ToolsManager &tm = ToolsManager::instance();
     // register default tools: upper, lower, capitalize
     tm.register_tool("length", length);
 }

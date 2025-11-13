@@ -6,7 +6,7 @@ using namespace jz;
 ordered_json IncludeTools::operator()(const ordered_json &input, const ordered_json &options,
                                       const ordered_json &ctx) const {
     if (input.is_null()) return nullptr;
-    string jz_input = getInclude(options);
+    string jz_input = getInclude(options, nullptr);
     const bool contextualInclude = jz_input.empty();
     if (input.is_array()) {
         ordered_json result(ordered_json::array());

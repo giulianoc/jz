@@ -1,69 +1,80 @@
 #pragma once
 
 #include <string>
+#include <string_view>
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 
 using std::string;
+using std::string_view;
 using std::runtime_error;
 using ordered_json = nlohmann::ordered_json;
 
 namespace jz {
+    /*
+     JZError
+     - extends std::runtime_error for compatibility with std::exception catchers
+     - stores line and column (1-based) and provides formatted what()
+    */
+    struct JZError final : public runtime_error {
+    public:
+        explicit JZError(string_view msg, size_t line_ = 1, size_t col_ = 1);
 
-struct JZError : public runtime_error {
-	explicit JZError(const string& msg, const size_t line_ = 0, const size_t col_ = 0)
-		: runtime_error(msg), line(line_), col(col_) {
-		//TODO: full_msg = std::format("{} at line {} col {}", msg, line, col);
-		full_msg = msg;
-	}
+        explicit JZError(const string &msg, const string &json);
 
-	[[nodiscard]] size_t line_no() const noexcept { return line; }
-	[[nodiscard]] size_t col_no()  const noexcept { return col; }
+        // JZError(const std::string &msg, size_t line_ = 1, size_t col_ = 1);
 
-	[[nodiscard]] const char* what() const noexcept override {
-		return full_msg.c_str();
-	}
+        // override what() to include location; noexcept per std::exception
+        // [[nodiscard]] const char *what() const noexcept override;
 
-private:
-	size_t line = 0;
-	size_t col  = 0;
-	std::string full_msg;
-};
+        [[nodiscard]] size_t line() const noexcept { return _line; }
+        [[nodiscard]] size_t column() const noexcept { return _column; }
+        [[nodiscard]] string_view json() const noexcept { return _json; }
 
-// Restituisce un valore JSON sentinel che indica "undefined" per JZ.
-// Esempio:
-//   ordered_json data;
-//   data["user"]["middle"] = jz::undefined();
-ordered_json undefined();
+    private:
+        size_t _line;
+        size_t _column;
+        string _json;
+        // std::string full_msg; // cached message returned by what()
+    };
 
-class Processor {
-public:
-	// Public API: prende l'input JZ (testo) e la mappa di dati (ordered_json),
-	// restituisce l'ordered_json risultante.
-	// Lancia jz::JZError in caso di errore.
-	static ordered_json to_json(const string& jz_input, const ordered_json& data);
+    /*
+     Processor
+     - static utility class that processes a JZ template (string) producing JSON output.
+     - public API: to_json which accepts input as std::string_view and the input data as ordered_json.
+     - many helper methods are static and internal-use; kept public static to match previous usage style.
+    */
+    struct Processor {
+        // Public API: convert a jz template (jz_input) into JSON, using `data` as the input context.
+        // Throws JZError on parse/eval/formatting errors.
+        static ordered_json to_json(std::string_view jz_input, const ordered_json &data);
 
-	// Utility pubbliche
-	static bool is_identifier_start(char c);
-	static bool is_identifier_part(char c);
-	static string normalize_json5_to_json(const string& s);
+        // --- Utilities used internally (but kept public static for testability) ---
 
-private:
-	// Pipeline helpers: trasformazioni testuali (JSON5 -> JSON) e placeholder/template
-	static string remove_comments(const string& s);
-	static string convert_single_quoted_strings(const string& s);
-	static string quote_unquoted_keys(const string& s);
-	static string remove_trailing_commas(const string& s);
+        // Comment removal (handles // and /* */ and respects strings)
+        static std::string remove_comments(std::string_view s);
 
-	// Placeholder/template replacement:
-	// - replace_placeholders_impl: implementazione che produce la stringa JSONish con
-	//   valori inseriti (uso interno).
-	static string replace_placeholders_impl(const string& s, const ordered_json& data);
-	static string replace_placeholders(const string& s, const ordered_json& data);
+        // Return whether a char is allowed as identifier start/part
+        static bool is_identifier_start(char c) noexcept;
 
-	// Rimozione dei sentinel 'undefined' e pulizia ricorsiva:
-	// - rimuove proprietà aventi il sentinel e filtra gli elementi undefined nelle array.
-	static void remove_undefined_sentinels(ordered_json& j);
-};
+        static bool is_identifier_part(char c) noexcept;
 
+        // Convert single-quoted strings to double-quoted JSON strings
+        static std::string convert_single_quoted_strings(std::string_view s);
+
+        // Quote unquoted object keys in object contexts ("foo: 1" -> "\"foo\": 1")
+        static std::string quote_unquoted_keys(std::string_view s);
+
+        // Remove trailing commas (before ']' or '}')
+        static std::string remove_trailing_commas(std::string_view s);
+
+        // Convenience: normalize JSON5-like input to strict JSON
+        static std::string normalize_json5_to_json(std::string_view s);
+
+        // Placeholder/template replacement:
+        static std::string replace_placeholders(std::string_view s, const ordered_json &data);
+
+        // Recursively remove 'undefined' sentinel nodes from JSON (both objects and arrays)
+        static void remove_undefined_sentinels(ordered_json &j);
+    };
 } // namespace jz

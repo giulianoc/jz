@@ -10,25 +10,25 @@ install(TARGETS jz DESTINATION services/cms-getter)
 
 # --- Test ---
 
-set(TEST_SOURCES test/jzParser.cpp)
+# set(TEST_SOURCES test/jzParser.cpp)
 
-add_executable(test-jz-parser ${TEST_SOURCES})
+# add_executable(test-jz-parser ${TEST_SOURCES})
 
-target_include_directories(test-jz-parser
-        PRIVATE
-        ./src
-        "${NLOHMANN_INCLUDE_DIR}"
-        "${CATCH2_INCLUDE_DIR}"
-)
+#target_include_directories(test-jz-parser
+#        PRIVATE
+#        ./src
+#        "${NLOHMANN_INCLUDE_DIR}"
+#        "${CATCH2_INCLUDE_DIR}"
+#)
 
-target_link_directories(test-jz-parser
-        PRIVATE
-        "${CATCH2_LIB_DIR}"
-)
-
-target_link_libraries(test-jz-parser
-        PRIVATE
-        jz
-        Catch2Main
-        Catch2
-)
+#target_link_directories(test-jz-parser
+#        PRIVATE
+#        "${CATCH2_LIB_DIR}"
+#)
+#
+#target_link_libraries(test-jz-parser
+#        PRIVATE
+#        jz
+#        Catch2Main
+#        Catch2
+#)

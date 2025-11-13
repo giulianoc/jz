@@ -12,5 +12,7 @@ public:
 
 private:
 	static ordered_json dateFormat(const ordered_json& input,const ordered_json& options,const ordered_json& ctx);
+
+    static ordered_json millis(const ordered_json &input, const ordered_json &options, const ordered_json &ctx);
 };
 }

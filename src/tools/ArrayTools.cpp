@@ -1,23 +1,31 @@
 #include "ArrayTools.hpp"
 #include "../ToolsManager.hpp"
 
-#include <sstream>
-
 using namespace std;
 using namespace jz;
 
 void ArrayTools::init() {
     ToolsManager &tm = ToolsManager::instance();
-    // register default tools: upper, lower, capitalize
     tm.register_tool("length", length);
 }
 
+/**
+ * Get the length of a string, array or object.
+ *
+ * @param input The input JSON value (string, array or object).
+ * @param options Options dictating default value if input is not string/array:
+ *                  default: number (default: none) - the default length value to return if input is not string/array/object.
+ * @param ctx Context (not used in this function).
+ * @return The length of the string, array or object, or nullptr/default if input is null or not a string/array/object.
+ */
 ordered_json ArrayTools::length(const ordered_json &input, const ordered_json &options, const ordered_json &ctx) {
-    if (input.is_null()) return 0; // ...oppure nullptr?
     if (input.is_string())
         return input.get<string>().size();
-    if (input.is_array())
+    if (input.is_array() || input.is_object())
         return input.size();
-    // TODO: dare eccezione perché ci aspettiamo una stringa?
+    if (options.is_object()) {
+        if (options.contains("default") && options["default"].is_number())
+            return options["default"].get<long long>();
+    }
     return nullptr;
 }

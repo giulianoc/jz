@@ -1,48 +1,189 @@
-// cpp
 #include "JZParser.hpp"
-#include "ToolsManager.hpp"
+#include "ToolsManager.hpp" // assumed available in your project
 
 #include <algorithm>
+#include <charconv>
+#include <format>
 #include <iostream>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
-#include <format>
 
 using namespace std;
 using ordered_json = nlohmann::ordered_json;
 
 namespace jz {
-    // ---------- undefined sentinel ----------
-    static const char UNDEF_KEY[] = "__jz_undefined__";
-
-    ordered_json undefined() {
-        ordered_json s = ordered_json::object();
-        s[UNDEF_KEY] = true;
-        return s;
+    /* -------------------------
+       JZError implementation
+       ------------------------- */
+    JZError::JZError(const string_view msg, const size_t line_, const size_t col_)
+        : runtime_error(std::format("{} (line {}, column {})", std::string(msg), line_, col_)),
+          _line(line_ > 0 ? line_ : 0), _column(col_ > 0 ? col_ : 0) {
+        // full_msg = std::format("{} (line {}, column {})\n{}", std::string(msg), line, column);
     }
 
-    static bool is_undefined_sentinel(const ordered_json &j) {
-        return j.is_object() && j.size() == 1 && j.contains(UNDEF_KEY) && j.at(UNDEF_KEY).is_boolean() && j.
-               at(UNDEF_KEY).get<bool>() == true;
+    JZError::JZError(const string &msg, const string &json)
+        : runtime_error(msg), _line(0), _column(0), _json(json) {
     }
 
-    // ---------- Utilities ----------
-    static inline bool is_space(char c) {
-        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    // JZError::JZError(const std::string &msg, size_t line_, size_t col_)
+    //     : JZError(string_view(msg), line_, col_) {
+    // }
+
+    // const char *JZError::what() const noexcept {
+    //     return full_msg.c_str();
+    // }
+    //
+    /* -------------------------
+       Internal helpers
+       ------------------------- */
+
+    // sentinel key used to represent `undefined` inside templates
+    static constexpr string_view UNDEF_KEY = "__jz_undefined__";
+
+    // Create an ordered_json sentinel for undefined
+    static ordered_json undefined_sentinel() {
+        ordered_json o = ordered_json::object();
+        o[string(UNDEF_KEY)] = true;
+        return o;
     }
 
-    bool Processor::is_identifier_start(char c) {
+    static bool is_undefined_sentinel(const ordered_json &j) noexcept {
+        return j.is_object() && j.size() == 1 && j.contains(string(UNDEF_KEY)) &&
+               j.at(string(UNDEF_KEY)).is_boolean() && j.at(string(UNDEF_KEY)).get<bool>() == true;
+    }
+
+    // safe whitespace test
+    static inline bool is_space_char(char c) noexcept {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+    }
+
+    /* -------------------------
+       Scanner with position tracking (1-based)
+       ------------------------- */
+    struct Scanner {
+        std::string_view s; // view into source
+        size_t i = 0; // current index (0-based)
+        size_t line = 1; // current line (1-based)
+        size_t col = 1; // current column (1-based)
+
+        explicit Scanner(const std::string_view src) : s(src) {
+        }
+
+        bool eof() const noexcept { return i >= s.size(); }
+
+        char peek(const size_t lookahead = 0) const noexcept {
+            const size_t pos = i + lookahead;
+            return (pos < s.size()) ? s[pos] : '\0';
+        }
+
+        // advance by one character and return it; update line/column
+        char next() {
+            if (eof()) return '\0';
+            const char c = s[i++];
+            if (c == '\n') {
+                ++line;
+                col = 1;
+            } else {
+                ++col;
+            }
+            return c;
+        }
+
+        // advance n characters (used carefully)
+        void advance(size_t n = 1) {
+            while (n-- && !eof()) next();
+        }
+
+        size_t pos() const noexcept { return i; }
+
+        // current line/column describing the character at position i (1-based)
+        pair<size_t, size_t> position_before() const noexcept {
+            return {line, col};
+        }
+
+        // position for previous char (useful when error happens after next())
+        pair<size_t, size_t> position_prev() const noexcept {
+            if (col > 1) return {line, col - 1};
+            if (line == 1) return {1, 1};
+            // if we haven't tracked per-line lengths, approximate: column 1 on previous line
+            return {line - 1, 1};
+        }
+    };
+
+    /* Helper to parse quoted string content given we are positioned after the opening delimiter.
+       Returns extracted content (without surrounding quotes). Advances scanner to the char after closing delimiter.
+       Throws JZError with position if unterminated.
+    */
+    /*
+    static string scan_quoted_string(Scanner &sc, char delim) {
+        string acc;
+        bool esc = false;
+        auto start_pos = sc.position_before();
+        while (!sc.eof()) {
+            char ch = sc.next();
+            if (esc) {
+                switch (ch) {
+                    case 'b': acc.push_back('\b');
+                        break;
+                    case 'f': acc.push_back('\f');
+                        break;
+                    case 'n': acc.push_back('\n');
+                        break;
+                    case 'r': acc.push_back('\r');
+                        break;
+                    case 't': acc.push_back('\t');
+                        break;
+                    case 'u':
+                        // preserve \uXXXX as literal sequence; copy backslash-u and the next 4 chars if available
+                        acc.push_back('\\');
+                        acc.push_back('u');
+                        for (int k = 0; k < 4 && !sc.eof(); ++k) {
+                            acc.push_back(sc.next());
+                        }
+                        break;
+                    default:
+                        acc.push_back(ch);
+                        break;
+                }
+                esc = false;
+                continue;
+            }
+            if (ch == '\\') {
+                esc = true;
+                continue;
+            }
+            if (ch == delim) {
+                return acc;
+            }
+            acc.push_back(ch);
+        }
+        auto [ln, col] = start_pos;
+        throw JZError("Unterminated quoted string", ln, col);
+    }
+
+    */
+    /* -------------------------
+       Processor static methods
+       ------------------------- */
+
+    bool Processor::is_identifier_start(char c) noexcept {
         return std::isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$';
     }
 
-    bool Processor::is_identifier_part(char c) {
+    bool Processor::is_identifier_part(char c) noexcept {
         return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
     }
 
-    // ---------- Comments removal ----------
-    string Processor::remove_comments(const string &s) {
+    /* remove_comments:
+       - removes C-like line comments and block comments
+       - respects string literals (single, double, backtick)
+       - throws JZError if block comment is unterminated
+    */
+    string Processor::remove_comments(string_view s) {
+        Scanner sc{s};
         string out;
         out.reserve(s.size());
 
@@ -52,21 +193,24 @@ namespace jz {
         char string_delim = 0;
         bool escape = false;
 
-        for (size_t i = 0; i < s.size(); ++i) {
-            char c = s[i];
-            char next = (i + 1 < s.size() ? s[i + 1] : '\0');
+        while (!sc.eof()) {
+            const char c = sc.next();
+            const char nextc = sc.peek();
 
             if (in_line_comment) {
                 if (c == '\n') {
                     in_line_comment = false;
                     out.push_back(c);
+                } else {
+                    // skip characters in line comment
                 }
                 continue;
             }
+
             if (in_block_comment) {
-                if (c == '*' && next == '/') {
+                if (c == '*' && nextc == '/') {
+                    sc.advance(); // skip '/'
                     in_block_comment = false;
-                    ++i; // skip '/'
                 }
                 continue;
             }
@@ -75,26 +219,24 @@ namespace jz {
                 out.push_back(c);
                 if (escape) {
                     escape = false;
-                } else {
-                    if (c == '\\') {
-                        escape = true;
-                    } else if (c == string_delim) {
-                        in_string = false;
-                        string_delim = 0;
-                    }
+                } else if (c == '\\') {
+                    escape = true;
+                } else if (c == string_delim) {
+                    in_string = false;
+                    string_delim = 0;
                 }
                 continue;
             }
 
             // not in comment or string
-            if (c == '/' && next == '/') {
+            if (c == '/' && nextc == '/') {
                 in_line_comment = true;
-                ++i; // skip second slash
+                sc.advance(); // consume second '/'
                 continue;
             }
-            if (c == '/' && next == '*') {
+            if (c == '/' && nextc == '*') {
                 in_block_comment = true;
-                ++i; // skip '*'
+                sc.advance(); // consume '*'
                 continue;
             }
             if (c == '"' || c == '\'' || c == '`') {
@@ -108,13 +250,20 @@ namespace jz {
         }
 
         if (in_block_comment) {
-            throw JZError("Unterminated block comment");
+            // block comment didn't close; position at end
+            auto [ln, col] = sc.position_prev();
+            throw JZError("Unterminated block comment", ln, col);
         }
+
         return out;
     }
 
-    // ---------- Single-quoted strings conversion ----------
-    string Processor::convert_single_quoted_strings(const string &s) {
+    /* convert_single_quoted_strings:
+       - convert single-quoted strings to double-quoted JSON-compatible strings
+       - preserves escape sequences
+    */
+    string Processor::convert_single_quoted_strings(string_view s) {
+        Scanner sc{s};
         string out;
         out.reserve(s.size());
 
@@ -122,47 +271,53 @@ namespace jz {
         char delim = 0;
         bool escape = false;
 
-        for (size_t i = 0; i < s.size(); ++i) {
-            char c = s[i];
-
+        while (!sc.eof()) {
+            char c = sc.next();
             if (!in_string) {
                 if (c == '"' || c == '\'') {
                     in_string = true;
                     delim = c;
-                    if (delim == '\'') {
-                        // Start JSON with double-quote instead
-                        out.push_back('"');
-                    } else {
-                        out.push_back(c);
-                    }
+                    // if single-quote, emit double-quote instead to make it valid JSON
+                    out.push_back((delim == '\'') ? '"' : '"');
                     escape = false;
-                } else {
-                    out.push_back(c);
+                    continue;
                 }
+                out.push_back(c);
                 continue;
             }
 
-            // Inside string
+            // inside string
             if (delim == '"') {
                 out.push_back(c);
-                if (escape) {
-                    escape = false;
-                } else if (c == '\\') {
-                    escape = true;
-                } else if (c == '"') {
+                if (escape) escape = false;
+                else if (c == '\\') escape = true;
+                else if (c == '"') {
                     in_string = false;
                     delim = 0;
                 }
                 continue;
             }
 
-            // Single quoted input -> convert to double quoted JSON
+            // delim == '\'' (single quoted input) -> convert to double quoted
             if (escape) {
-                if (c == '\'') {
-                    out.push_back('\''); // no leading backslash
-                } else {
-                    out.push_back('\\');
-                    out.push_back(c);
+                // keep common escapes but ensure JSON-compatibility
+                switch (c) {
+                    case '\'': out.push_back('\'');
+                        break;
+                    case '"': out.append("\\\"");
+                        break;
+                    case '\\': out.append("\\\\");
+                        break;
+                    case 'n': out.append("\\n");
+                        break;
+                    case 'r': out.append("\\r");
+                        break;
+                    case 't': out.append("\\t");
+                        break;
+                    default:
+                        out.push_back('\\');
+                        out.push_back(c);
+                        break;
                 }
                 escape = false;
                 continue;
@@ -172,7 +327,9 @@ namespace jz {
                 escape = true;
                 continue;
             }
+
             if (c == '\'') {
+                // close single-quoted -> emit closing double-quote
                 out.push_back('"');
                 in_string = false;
                 delim = 0;
@@ -180,22 +337,26 @@ namespace jz {
             }
 
             if (c == '"') {
-                out.push_back('\\');
-                out.push_back('"');
+                // escape double-quote inside single-quoted string
+                out.append("\\\"");
             } else {
                 out.push_back(c);
             }
         }
 
         if (in_string && delim == '\'') {
-            throw JZError("Unterminated single-quoted string");
+            auto [ln, col] = sc.position_prev();
+            throw JZError("Unterminated single-quoted string", ln, col);
         }
 
         return out;
     }
 
-    // ---------- Quote unquoted keys ----------
-    string Processor::quote_unquoted_keys(const string &s) {
+    /* quote_unquoted_keys:
+       - walk the content and, when inside an object expecting a key, quote identifier-like keys
+         before a ':' character. Keeps whitespace intact.
+    */
+    string Processor::quote_unquoted_keys(string_view s) {
         string out;
         out.reserve(s.size());
 
@@ -210,27 +371,13 @@ namespace jz {
         char delim = 0;
         bool escape = false;
 
-        auto push_ctx = [&](Ctx c) {
-            if (c == Ctx::InObject) {
-                stack.push_back({c, true});
-            } else {
-                stack.push_back({c, false});
-            }
-        };
-        auto pop_ctx = [&]() {
-            if (!stack.empty()) stack.pop_back();
-        };
-
         for (size_t i = 0; i < s.size(); ++i) {
-            char c = s[i];
-
+            const char c = s[i];
             if (in_string) {
                 out.push_back(c);
-                if (escape) {
-                    escape = false;
-                } else if (c == '\\') {
-                    escape = true;
-                } else if (c == delim) {
+                if (escape) escape = false;
+                else if (c == '\\') escape = true;
+                else if (c == delim) {
                     in_string = false;
                     delim = 0;
                 }
@@ -246,61 +393,46 @@ namespace jz {
 
             if (c == '{') {
                 out.push_back(c);
-                push_ctx(Ctx::InObject);
+                stack.push_back({Ctx::InObject, true});
                 continue;
             }
             if (c == '[') {
                 out.push_back(c);
-                push_ctx(Ctx::InArray);
+                stack.push_back({Ctx::InArray, false});
                 continue;
             }
-            if (c == '}') {
+            if (c == '}' || c == ']') {
                 out.push_back(c);
-                pop_ctx();
-                continue;
-            }
-            if (c == ']') {
-                out.push_back(c);
-                pop_ctx();
+                if (!stack.empty()) stack.pop_back();
                 continue;
             }
 
             if (!stack.empty() && stack.back().ctx == Ctx::InObject) {
                 if (stack.back().expecting_key) {
-                    if (is_space(c)) {
+                    if (is_space_char(c)) {
                         out.push_back(c);
                         continue;
                     }
-                    if (c == '"') {
+                    if (c == '"' || c == '\'') {
                         in_string = true;
-                        delim = '"';
+                        delim = c;
                         out.push_back(c);
                         continue;
                     }
-                    if (c == '\'') {
-                        in_string = true;
-                        delim = '\'';
-                        out.push_back(c);
-                        continue;
-                    }
-                    if (is_identifier_start(c)) {
+                    if (Processor::is_identifier_start(c)) {
                         size_t j = i + 1;
-                        while (j < s.size() && is_identifier_part(s[j])) ++j;
-
+                        while (j < s.size() && Processor::is_identifier_part(s[j])) ++j;
                         size_t k = j;
-                        while (k < s.size() && is_space(s[k])) ++k;
-
+                        while (k < s.size() && is_space_char(s[k])) ++k;
                         if (k < s.size() && s[k] == ':') {
                             out.push_back('"');
-                            out.append(s.begin() + static_cast<long>(i), s.begin() + static_cast<long>(j));
+                            out.append(s.data() + i, j - i);
                             out.push_back('"');
-                            out.append(s.begin() + static_cast<long>(j), s.begin() + static_cast<long>(k));
+                            // append whitespace between identifier end and ':'
+                            if (k > j) out.append(s.data() + j, k - j);
                             out.push_back(':');
-                            i = k;
+                            i = k; // main loop will increment i
                             stack.back().expecting_key = false;
-                            continue;
-                        } else {
-                            out.push_back(c);
                             continue;
                         }
                     }
@@ -308,9 +440,7 @@ namespace jz {
                     continue;
                 } else {
                     out.push_back(c);
-                    if (c == ',') {
-                        stack.back().expecting_key = true;
-                    }
+                    if (c == ',') stack.back().expecting_key = true;
                     continue;
                 }
             }
@@ -321,8 +451,11 @@ namespace jz {
         return out;
     }
 
-    // ---------- Remove trailing commas ----------
-    string Processor::remove_trailing_commas(const string &s) {
+    /* remove_trailing_commas:
+       - naive approach: when encountering ']' or '}', walk back and remove a comma immediately before closing
+         (skipping whitespace).
+    */
+    string Processor::remove_trailing_commas(string_view s) {
         string out;
         out.reserve(s.size());
 
@@ -331,15 +464,12 @@ namespace jz {
         bool escape = false;
 
         for (size_t i = 0; i < s.size(); ++i) {
-            char c = s[i];
-
+            const char c = s[i];
             if (in_string) {
                 out.push_back(c);
-                if (escape) {
-                    escape = false;
-                } else if (c == '\\') {
-                    escape = true;
-                } else if (c == delim) {
+                if (escape) escape = false;
+                else if (c == '\\') escape = true;
+                else if (c == delim) {
                     in_string = false;
                     delim = 0;
                 }
@@ -354,9 +484,9 @@ namespace jz {
             }
 
             if (c == ']' || c == '}') {
+                // remove a trailing comma before this bracket, skipping spaces
                 size_t trim = out.size();
-                while (trim > 0 && is_space(out[trim - 1])) --trim;
-
+                while (trim > 0 && is_space_char(out[trim - 1])) --trim;
                 if (trim > 0 && out[trim - 1] == ',') {
                     out.erase(out.begin() + static_cast<long>(trim - 1), out.end());
                 }
@@ -370,128 +500,98 @@ namespace jz {
         return out;
     }
 
-    // ---------- JSON5 -> JSON pipeline ----------
-    string Processor::normalize_json5_to_json(const string &s) {
-        auto s1 = convert_single_quoted_strings(s);
-        auto s2 = quote_unquoted_keys(s1);
-        auto s3 = remove_trailing_commas(s2);
-        return s3;
+    string Processor::normalize_json5_to_json(const string_view s) {
+        return remove_trailing_commas(quote_unquoted_keys(convert_single_quoted_strings(s)));
     }
 
-    // ---------- Placeholder expression evaluation + tools pipeline ----------
+    /* -------------------------
+       Evaluation subsystem (expressions, lexer & parser)
+       The expression system supports:
+        - identifiers and path access (a.b[0].c)
+        - literals (string, number, true/false/null/undefined)
+        - boolean operators: ||, &&, !
+        - equality/relational operators: ==, !=, <, >, <=, >=
+        - nullish coalescing: ??
+        - ternary: ?:
+        - pipeline: |#toolName(opt=val){...}
+       This is a compact, self-contained expression evaluator adapted from the original.
+       ------------------------- */
 
     namespace eval {
         struct Value {
-            bool missing = false; // path not found
+            bool missing = false;
             ordered_json j;
-
             static Value from_json(ordered_json v) { return Value{false, std::move(v)}; }
             static Value missing_value() { return Value{true, ordered_json(nullptr)}; }
         };
 
-        static bool is_undefined(const Value &v) {
-            return v.missing || is_undefined_sentinel(v.j);
-        }
-
-        // nullish for ?? means only missing OR undefined
-        static bool is_nullish(const Value &v) {
-            return v.missing || is_undefined(v);
-        }
+        static bool is_undefined(const Value &v) { return v.missing || is_undefined_sentinel(v.j); }
+        static bool is_nullish(const Value &v) { return v.missing || is_undefined(v); }
 
         static bool is_truthy(const Value &v) {
             if (v.missing) return false;
             if (is_undefined(v)) return false;
             if (v.j.is_boolean()) return v.j.get<bool>();
             if (v.j.is_null()) return false;
-            if (v.j.is_number_integer() || v.j.is_number_unsigned() || v.j.is_number_float()) {
-                try {
-                    double d = v.j.get<double>();
-                    return d != 0.0;
-                } catch (...) {
-                    return true;
-                }
+            if (v.j.is_number()) {
+                try { return v.j.get<double>() != 0.0; } catch (...) { return true; }
             }
             if (v.j.is_string()) return !v.j.get_ref<const string &>().empty();
             if (v.j.is_array() || v.j.is_object()) return true;
             return true;
         }
 
-        // Try to coerce a Value to a double when sensible.
-        // Returns optional<double> with value if conversion possible, otherwise nullopt.
         static optional<double> to_number_opt(const Value &v) {
             if (v.missing) return nullopt;
             if (is_undefined(v)) return nullopt;
             if (v.j.is_number()) {
-                try {
-                    return v.j.get<double>();
-                } catch (...) {
-                    return nullopt;
-                }
+                try { return v.j.get<double>(); } catch (...) { return nullopt; }
             }
-            if (v.j.is_boolean()) {
-                return v.j.get<bool>() ? 1.0 : 0.0;
-            }
+            if (v.j.is_boolean()) return v.j.get<bool>() ? 1.0 : 0.0;
             if (v.j.is_string()) {
                 const string &s = v.j.get_ref<const string &>();
-                if (s.empty()) return 0.0; // JS: Number("") -> 0
+                if (s.empty()) return 0.0;
                 try {
                     size_t idx = 0;
                     double d = stod(s, &idx);
                     if (idx == s.size()) return d;
                     return nullopt;
-                } catch (...) {
-                    return nullopt;
-                }
+                } catch (...) { return nullopt; }
             }
             return nullopt;
         }
 
-        // Compare equality in a JS-lite sensible way for our common cases.
-        // Returns true if equal, false otherwise.
         static bool eq_values(const Value &a, const Value &b) {
-            // missing/undefined handling:
             if (a.missing && b.missing) return true;
             if ((a.missing && is_undefined(b)) || (b.missing && is_undefined(a))) return true;
             if (is_undefined(a) && is_undefined(b)) return true;
 
-            // If both primitives and same type -> use ordered_json equality
             if (!a.missing && !is_undefined(a) && !b.missing && !is_undefined(b)) {
-                if (a.j.type() == b.j.type()) {
-                    return a.j == b.j;
-                }
+                if (a.j.type() == b.j.type()) return a.j == b.j;
             }
 
-            // Try numeric comparison when one is number or numeric string or boolean:
             auto an = to_number_opt(a);
             auto bn = to_number_opt(b);
-            if (an && bn) {
-                return *an == *bn;
-            }
+            if (an && bn) return *an == *bn;
 
-            // Fallback: compare stringified forms
             string sa = a.missing ? string("missing") : (is_undefined(a) ? string("undefined") : a.j.dump());
             string sb = b.missing ? string("missing") : (is_undefined(b) ? string("undefined") : b.j.dump());
             return sa == sb;
         }
 
-        // Relational comparison (<, >, <=, >=) — returns optional<bool> (nullopt if not comparable)
         static optional<bool> relational_compare(const Value &a, const Value &b, char op) {
-            // If both numbers (or convertible), compare numerically
             auto an = to_number_opt(a);
             auto bn = to_number_opt(b);
             if (an && bn) {
-                double A = *an;
-                double B = *bn;
+                double A = *an, B = *bn;
                 switch (op) {
                     case '<': return A < B;
                     case '>': return A > B;
-                    case 'l': return A <= B; // <=
-                    case 'g': return A >= B; // >=
+                    case 'l': return A <= B;
+                    case 'g': return A >= B;
                     default: return nullopt;
                 }
             }
-
-            // If both strings, compare lexicographically
             if (!a.missing && !is_undefined(a) && a.j.is_string() && !b.missing && !is_undefined(b) && b.j.
                 is_string()) {
                 const string &A = a.j.get_ref<const string &>();
@@ -504,178 +604,162 @@ namespace jz {
                     default: return nullopt;
                 }
             }
-
-            // Otherwise not comparable in our simplified semantics
             return nullopt;
         }
 
+        /* Token, Lexer, Parser:
+           compact implementation focusing on clarity and position tracking where errors are thrown.
+        */
         struct Token {
             enum Type {
-                T_EOF,
-                T_IDENTIFIER,
-                T_NUMBER,
-                T_STRING,
-                T_TRUE,
-                T_FALSE,
-                T_NULL,
-                T_UNDEFINED,
-                T_QMARK, // ?
-                T_COLON, // :
-                T_DOT, // .
-                T_LPAREN, // (
-                T_RPAREN, // )
-                T_LBRACKET, // [
-                T_RBRACKET, // ]
-                T_LBRACE, // {
-                T_RBRACE, // }
-                T_COMMA, // ,
-                T_PIPE, // |
-                T_HASH, // #
-                T_OR, // ||
-                T_AND, // &&
-                T_NOT, // !
-                T_NULLISH, // ??
-                T_EQ, // ==
-                T_NE, // !=
-                T_GT, // >
-                T_LT, // <
-                T_GTE, // >=
-                T_LTE, // <=
-                T_ASSIGN // =     (single equals for tool options)
-            } type;
+                T_EOF, T_IDENTIFIER, T_NUMBER, T_STRING, T_TRUE, T_FALSE, T_NULL, T_UNDEFINED,
+                T_QMARK, T_COLON, T_DOT, T_LPAREN, T_RPAREN, T_LBRACKET, T_RBRACKET, T_LBRACE, T_RBRACE,
+                T_COMMA, T_PIPE, T_HASH, T_OR, T_AND, T_NOT, T_NULLISH, T_EQ, T_NE, T_GT, T_LT, T_GTE, T_LTE, T_ASSIGN
+            };
 
+            Type type;
             string text;
+            size_t line = 1;
+            size_t col = 1;
         };
 
         struct Lexer {
-            const string &s;
+            string_view s;
             size_t i = 0;
+            size_t line = 1;
+            size_t col = 1;
 
-            explicit Lexer(const string &src) : s(src) {
+            explicit Lexer(string_view src) : s(src) {
             }
 
-            static bool is_id_start(char c) {
-                return isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$';
-            }
-
-            static bool is_id_part(char c) {
-                return isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$';
-            }
+            static bool is_id_start(char c) { return isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$'; }
+            static bool is_id_part(char c) { return isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '$'; }
 
             void skip_ws() {
-                while (i < s.size() && isspace(static_cast<unsigned char>(s[i]))) ++i;
+                while (i < s.size()) {
+                    char c = s[i];
+                    if (c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v') {
+                        ++i;
+                        ++col;
+                        continue;
+                    }
+                    if (c == '\n') {
+                        ++i;
+                        ++line;
+                        col = 1;
+                        continue;
+                    }
+                    break;
+                }
+            }
+
+            Token make_token(const Token::Type t, string text = {}) const {
+                Token tok;
+                tok.type = t;
+                tok.text = std::move(text);
+                tok.line = line;
+                tok.col = col;
+                return tok;
             }
 
             Token next() {
                 skip_ws();
-                if (i >= s.size()) return {Token::T_EOF, ""};
+                if (i >= s.size()) return make_token(Token::T_EOF);
+
+                // helper to peek ahead
+                auto peek = [&](size_t k = 0) -> char { return (i + k < s.size()) ? s[i + k] : '\0'; };
+
                 char c = s[i];
 
-                // Two-char operators first
-                if (c == '?' && i + 1 < s.size() && s[i + 1] == '?') {
+                // two-char tokens
+                if (c == '?' && peek(1) == '?') {
+                    // nullish
+                    size_t l = line, co = col;
                     i += 2;
-                    return {Token::T_NULLISH, "??"};
+                    col += 2;
+                    return Token{Token::T_NULLISH, "??", l, co};
                 }
-                if (c == '|' && i + 1 < s.size() && s[i + 1] == '|') {
+                if (c == '|' && peek(1) == '|') {
+                    size_t l = line, co = col;
                     i += 2;
-                    return {Token::T_OR, "||"};
+                    col += 2;
+                    return Token{Token::T_OR, "||", l, co};
                 }
-                if (c == '&' && i + 1 < s.size() && s[i + 1] == '&') {
+                if (c == '&' && peek(1) == '&') {
+                    size_t l = line, co = col;
                     i += 2;
-                    return {Token::T_AND, "&&"};
+                    col += 2;
+                    return Token{Token::T_AND, "&&", l, co};
                 }
-                if (c == '=' && i + 1 < s.size() && s[i + 1] == '=') {
+                if (c == '=' && peek(1) == '=') {
+                    size_t l = line, co = col;
                     i += 2;
-                    return {Token::T_EQ, "=="};
+                    col += 2;
+                    return Token{Token::T_EQ, "==", l, co};
                 }
-                if (c == '!' && i + 1 < s.size() && s[i + 1] == '=') {
+                if (c == '!' && peek(1) == '=') {
+                    size_t l = line, co = col;
                     i += 2;
-                    return {Token::T_NE, "!="};
+                    col += 2;
+                    return Token{Token::T_NE, "!=", l, co};
                 }
-                if (c == '>' && i + 1 < s.size() && s[i + 1] == '=') {
+                if (c == '>' && peek(1) == '=') {
+                    size_t l = line, co = col;
                     i += 2;
-                    return {Token::T_GTE, ">="};
+                    col += 2;
+                    return Token{Token::T_GTE, ">=", l, co};
                 }
-                if (c == '<' && i + 1 < s.size() && s[i + 1] == '=') {
+                if (c == '<' && peek(1) == '=') {
+                    size_t l = line, co = col;
                     i += 2;
-                    return {Token::T_LTE, "<="};
+                    col += 2;
+                    return Token{Token::T_LTE, "<=", l, co};
                 }
 
-                // Single-char tokens
-                if (c == '?') {
+                // single char tokens
+                auto consume_single = [&](Token::Type t) -> Token {
+                    Token tok;
+                    tok.type = t;
+                    tok.line = line;
+                    tok.col = col;
                     ++i;
-                    return {Token::T_QMARK, "?"};
-                }
-                if (c == ':') {
-                    ++i;
-                    return {Token::T_COLON, ":"};
-                }
-                if (c == '.') {
-                    ++i;
-                    return {Token::T_DOT, "."};
-                }
-                if (c == '(') {
-                    ++i;
-                    return {Token::T_LPAREN, "("};
-                }
-                if (c == ')') {
-                    ++i;
-                    return {Token::T_RPAREN, ")"};
-                }
-                if (c == '[') {
-                    ++i;
-                    return {Token::T_LBRACKET, "["};
-                }
-                if (c == ']') {
-                    ++i;
-                    return {Token::T_RBRACKET, "]"};
-                }
-                if (c == '{') {
-                    ++i;
-                    return {Token::T_LBRACE, "{"};
-                }
-                if (c == '}') {
-                    ++i;
-                    return {Token::T_RBRACE, "}"};
-                }
-                if (c == ',') {
-                    ++i;
-                    return {Token::T_COMMA, ","};
-                }
-                if (c == '|') {
-                    ++i;
-                    return {Token::T_PIPE, "|"};
-                } // single pipe for tool pipeline
-                if (c == '#') {
-                    ++i;
-                    return {Token::T_HASH, "#"};
-                } // tool marker
-                if (c == '!') {
-                    ++i;
-                    return {Token::T_NOT, "!"};
-                }
-                if (c == '>') {
-                    ++i;
-                    return {Token::T_GT, ">"};
-                }
-                if (c == '<') {
-                    ++i;
-                    return {Token::T_LT, "<"};
+                    ++col;
+                    return tok;
+                };
+
+                switch (c) {
+                    case '?': return consume_single(Token::T_QMARK);
+                    case ':': return consume_single(Token::T_COLON);
+                    case '.': return consume_single(Token::T_DOT);
+                    case '(': return consume_single(Token::T_LPAREN);
+                    case ')': return consume_single(Token::T_RPAREN);
+                    case '[': return consume_single(Token::T_LBRACKET);
+                    case ']': return consume_single(Token::T_RBRACKET);
+                    case '{': return consume_single(Token::T_LBRACE);
+                    case '}': return consume_single(Token::T_RBRACE);
+                    case ',': return consume_single(Token::T_COMMA);
+                    case '|': return consume_single(Token::T_PIPE);
+                    case '#': return consume_single(Token::T_HASH);
+                    case '!': return consume_single(Token::T_NOT);
+                    case '>': return consume_single(Token::T_GT);
+                    case '<': return consume_single(Token::T_LT);
+                    case '=': return consume_single(Token::T_ASSIGN);
                 }
 
-                // single '=' (assignment / option separator)
-                if (c == '=') {
-                    ++i;
-                    return {Token::T_ASSIGN, "="};
-                }
-
+                // strings
                 if (c == '"' || c == '\'') {
+                    size_t start_line = line, start_col = col;
                     char delim = c;
                     ++i;
+                    ++col; // skip delim
                     string acc;
                     bool esc = false;
                     while (i < s.size()) {
                         char ch = s[i++];
+                        if (ch == '\n') {
+                            ++line;
+                            col = 1;
+                        } else ++col;
                         if (esc) {
                             switch (ch) {
                                 case '"': acc.push_back('"');
@@ -694,84 +778,115 @@ namespace jz {
                                     break;
                                 case 't': acc.push_back('\t');
                                     break;
-                                case 'u': {
-                                    if (i + 4 <= s.size()) {
-                                        acc.push_back('\\');
-                                        acc.push_back('u');
-                                        acc.append(s, i, 4);
-                                        i += 4;
-                                    } else {
-                                        acc.push_back('\\');
-                                        acc.push_back('u');
+                                case 'u':
+                                    // copy \uXXXX as-is
+                                    acc.push_back('\\');
+                                    acc.push_back('u');
+                                    for (int k = 0; k < 4 && i < s.size(); ++k) {
+                                        acc.push_back(s[i++]);
+                                        ++col;
                                     }
-                                    break;
-                                }
-                                case '\'': acc.push_back('\'');
                                     break;
                                 default: acc.push_back(ch);
                                     break;
                             }
                             esc = false;
-                        } else if (ch == '\\') {
-                            esc = true;
-                        } else if (ch == delim) {
-                            break;
-                        } else {
-                            acc.push_back(ch);
+                            continue;
                         }
+                        if (ch == '\\') {
+                            esc = true;
+                            continue;
+                        }
+                        if (ch == delim) {
+                            return Token{Token::T_STRING, std::move(acc), start_line, start_col};
+                        }
+                        acc.push_back(ch);
                     }
-                    return {Token::T_STRING, std::move(acc)};
+                    throw JZError("Unterminated string literal", start_line, start_col);
                 }
 
-                if (isdigit(static_cast<unsigned char>(c)) || (c == '-' && i + 1 < s.size() && isdigit(
-                                                                   static_cast<unsigned char>(s[i + 1])))) {
+                // numbers (simple recognition)
+                if (isdigit(static_cast<unsigned char>(c)) || (
+                        c == '-' && isdigit(static_cast<unsigned char>(peek(1))))) {
                     size_t start = i;
+                    size_t start_line = line, start_col = col;
                     ++i;
-                    while (i < s.size() && (isdigit(static_cast<unsigned char>(s[i])))) ++i;
+                    ++col;
+                    while (i < s.size() && isdigit(static_cast<unsigned char>(s[i]))) {
+                        ++i;
+                        ++col;
+                    }
                     if (i < s.size() && s[i] == '.') {
                         ++i;
-                        while (i < s.size() && isdigit(static_cast<unsigned char>(s[i]))) ++i;
+                        ++col;
+                        while (i < s.size() && isdigit(static_cast<unsigned char>(s[i]))) {
+                            ++i;
+                            ++col;
+                        }
                     }
                     if (i < s.size() && (s[i] == 'e' || s[i] == 'E')) {
                         ++i;
-                        if (i < s.size() && (s[i] == '+' || s[i] == '-')) ++i;
-                        while (i < s.size() && isdigit(static_cast<unsigned char>(s[i]))) ++i;
+                        ++col;
+                        if (i < s.size() && (s[i] == '+' || s[i] == '-')) {
+                            ++i;
+                            ++col;
+                        }
+                        while (i < s.size() && isdigit(static_cast<unsigned char>(s[i]))) {
+                            ++i;
+                            ++col;
+                        }
                     }
-                    return {Token::T_NUMBER, s.substr(start, i - start)};
+                    return Token{Token::T_NUMBER, string(s.substr(start, i - start)), start_line, start_col};
                 }
 
+                // identifier or keywords
                 if (is_id_start(c)) {
-                    size_t start = i++;
-                    while (i < s.size() && is_id_part(s[i])) ++i;
-                    string id = s.substr(start, i - start);
-                    if (id == "true") return {Token::T_TRUE, id};
-                    if (id == "false") return {Token::T_FALSE, id};
-                    if (id == "null") return {Token::T_NULL, id};
-                    if (id == "undefined") return {Token::T_UNDEFINED, id};
-                    return {Token::T_IDENTIFIER, std::move(id)};
+                    size_t start = i;
+                    size_t start_line = line, start_col = col;
+                    ++i;
+                    ++col;
+                    while (i < s.size() && is_id_part(s[i])) {
+                        ++i;
+                        ++col;
+                    }
+                    string id = string(s.substr(start, i - start));
+                    if (id == "true") return Token{Token::T_TRUE, id, start_line, start_col};
+                    if (id == "false") return Token{Token::T_FALSE, id, start_line, start_col};
+                    if (id == "null") return Token{Token::T_NULL, id, start_line, start_col};
+                    if (id == "undefined") return Token{Token::T_UNDEFINED, id, start_line, start_col};
+                    return Token{Token::T_IDENTIFIER, std::move(id), start_line, start_col};
                 }
 
-                string msg = "Unexpected character in expression: '";
-                msg.push_back(c);
-                msg.push_back('\'');
-                throw JZError(msg);
+                // unexpected character
+                throw JZError(std::format("Unexpected character in expression: '{}'", c), line, col);
             }
         };
 
+        /* Parser: recursive descent parser for expressions */
         struct Parser {
             Lexer lex;
-            const ordered_json &data;
             Token cur;
+            const ordered_json &data;
 
-            explicit Parser(const string &expr, const ordered_json &d) : lex(expr), data(d) {
-                cur = lex.next();
-            }
+            // NEW: gate to enable/disable tool execution during parsing
+            bool enable_tools = true;
+
+            // RAII scope to toggle tool execution
+            struct ToolExecScope {
+                Parser *self;
+                bool prev;
+
+                explicit ToolExecScope(Parser *s, bool enabled)
+                    : self(s), prev(s->enable_tools) { self->enable_tools = enabled; }
+
+                ~ToolExecScope() { self->enable_tools = prev; }
+            };
+
+            explicit Parser(string_view expr, const ordered_json &d) : lex(expr), data(d) { cur = lex.next(); }
 
             void consume(Token::Type t, const char *what) {
                 if (cur.type != t) {
-                    ostringstream oss;
-                    oss << "Expected " << what << " in expression";
-                    throw JZError(oss.str());
+                    throw JZError(std::format("Expected {} in expression", what), cur.line, cur.col);
                 }
                 cur = lex.next();
             }
@@ -784,10 +899,11 @@ namespace jz {
                 return false;
             }
 
-            // utility: find matching brace position in lex.s starting at current lex.i (which is after the '{')
-            size_t find_matching_brace_pos() {
-                const string &s = lex.s;
-                size_t pos = lex.i; // points after '{'
+            // find matching brace position in raw lexer input (used to extract {...} tool context)
+            size_t find_matching_brace_pos_in_source() const {
+                // operate on lex.s directly; start at lex.i (current position points after '{')
+                const string_view &s = lex.s;
+                size_t pos = lex.i;
                 int depth = 1;
                 bool in_str = false;
                 char delim = 0;
@@ -815,69 +931,91 @@ namespace jz {
                             continue;
                         }
                         if (c == '{') {
-                            depth++;
+                            ++depth;
                             continue;
                         }
-                        if (c == '}') {
-                            depth--;
-                            if (depth == 0) return pos - 1;
-                        }
+                        if (c == '}') { if (--depth == 0) return pos - 1; }
                     }
                 }
-                throw JZError("Unterminated '{...}' block in tool context");
+                throw JZError("Unterminated '{...}' block in tool context", cur.line, cur.col);
             }
 
-            // Top-level
-            Value parse_expr() {
-                return parse_ternary();
-            }
+            Value parse_expr() { return parse_ternary(); }
 
-            // ternary: cond ? then : else
+            // Short-circuit ternary: only evaluate the selected branch
             Value parse_ternary() {
                 Value cond = parse_or();
-                if (match(Token::T_QMARK)) {
-                    Value thenv = parse_expr();
-                    consume(Token::T_COLON, "':'");
-                    Value elsev = parse_expr();
-                    return is_truthy(cond) ? thenv : elsev;
+                if (cur.type == Token::T_QMARK) {
+                    match(Token::T_QMARK);
+                    if (is_truthy(cond)) {
+                        Value thenv = parse_expr();
+                        consume(Token::T_COLON, ":");
+                        // Parse and discard else branch with tools disabled
+                        {
+                            ToolExecScope _(this, false);
+                            (void) parse_expr();
+                        }
+                        return thenv;
+                    } else {
+                        // Parse and discard then branch with tools disabled
+                        {
+                            ToolExecScope _(this, false);
+                            (void) parse_expr();
+                        }
+                        consume(Token::T_COLON, ":");
+                        Value elsev = parse_expr();
+                        return elsev;
+                    }
                 }
                 return cond;
             }
 
-            // OR: left || right  (short-circuit, returns operand)
+            // Short-circuit OR: skip right when left is truthy
             Value parse_or() {
                 Value left = parse_and();
                 while (cur.type == Token::T_OR) {
                     match(Token::T_OR);
-                    Value right = parse_and();
-                    left = is_truthy(left) ? left : right;
+                    if (is_truthy(left)) {
+                        ToolExecScope _(this, false);
+                        (void) parse_and(); // consume tokens without running tools
+                    } else {
+                        left = parse_and(); // evaluate right
+                    }
                 }
                 return left;
             }
 
-            // AND: left && right (short-circuit)
+            // Short-circuit AND: skip right when left is falsy
             Value parse_and() {
                 Value left = parse_nullish();
                 while (cur.type == Token::T_AND) {
                     match(Token::T_AND);
-                    Value right = parse_nullish();
-                    left = is_truthy(left) ? right : left;
+                    if (is_truthy(left)) {
+                        left = parse_nullish(); // evaluate right
+                    } else {
+                        ToolExecScope _(this, false);
+                        (void) parse_nullish(); // consume tokens without running tools
+                    }
                 }
                 return left;
             }
 
-            // Nullish coalesce: left ?? right (operates only for missing/undefined)
+            // Short-circuit nullish coalescing: skip right when left is not nullish
             Value parse_nullish() {
                 Value left = parse_equality();
                 if (cur.type == Token::T_NULLISH) {
                     match(Token::T_NULLISH);
-                    Value right = parse_equality();
-                    left = is_nullish(left) ? right : left;
+                    if (!is_nullish(left)) {
+                        ToolExecScope _(this, false);
+                        (void) parse_equality(); // consume tokens without running tools
+                        return left;
+                    } else {
+                        return parse_equality(); // evaluate right
+                    }
                 }
                 return left;
             }
 
-            // Equality: ==, != (produce boolean)
             Value parse_equality() {
                 Value left = parse_relational();
                 while (cur.type == Token::T_EQ || cur.type == Token::T_NE) {
@@ -890,7 +1028,6 @@ namespace jz {
                 return left;
             }
 
-            // Relational: <, >, <=, >= (produce boolean)
             Value parse_relational() {
                 Value left = parse_unary();
                 while (cur.type == Token::T_LT || cur.type == Token::T_GT || cur.type == Token::T_LTE || cur.type ==
@@ -898,22 +1035,20 @@ namespace jz {
                     Token::Type op = cur.type;
                     cur = lex.next();
                     Value right = parse_unary();
-                    char opcode = 0;
-                    if (op == Token::T_LT) opcode = '<';
-                    else if (op == Token::T_GT) opcode = '>';
-                    else if (op == Token::T_LTE) opcode = 'l'; // <=
-                    else if (op == Token::T_GTE) opcode = 'g'; // >=
-
+                    char opcode = (op == Token::T_LT)
+                                      ? '<'
+                                      : (op == Token::T_GT)
+                                            ? '>'
+                                            : (op == Token::T_LTE)
+                                                  ? 'l'
+                                                  : 'g';
                     auto cmp = relational_compare(left, right, opcode);
-                    bool res = false;
-                    if (cmp.has_value()) res = cmp.value();
-                    else res = false; // if not comparable, treat as false
+                    bool res = cmp.has_value() ? cmp.value() : false;
                     left = Value::from_json(ordered_json(res));
                 }
                 return left;
             }
 
-            // Unary: !primary
             Value parse_unary() {
                 if (cur.type == Token::T_NOT) {
                     match(Token::T_NOT);
@@ -925,93 +1060,81 @@ namespace jz {
             }
 
             // pipeline: primary (| #tool(...){...})*
-            // cpp
-            // Modified parse_pipeline() inside Parser in `thirdPartyLibraries/jz/src/JZParser.cpp`
+            // Pipeline: run tool only if enabled and input not undefined
             Value parse_pipeline() {
                 Value left = parse_primary();
                 while (cur.type == Token::T_PIPE) {
                     match(Token::T_PIPE);
-                    // expect tool invocation starting with '#'
-                    if (cur.type != Token::T_HASH) {
-                        throw JZError("Expected '#' before tool name in pipeline");
-                    }
+                    if (cur.type != Token::T_HASH)
+                        throw JZError("Expected '#' before tool name in pipeline", cur.line, cur.col);
                     match(Token::T_HASH);
-                    if (cur.type != Token::T_IDENTIFIER) {
-                        throw JZError("Expected tool identifier after '#'");
-                    }
+                    if (cur.type != Token::T_IDENTIFIER)
+                        throw JZError("Expected tool identifier after '#'", cur.line, cur.col);
                     string toolname = cur.text;
                     cur = lex.next();
 
-                    // parse options: ( key = expr, ... )
                     ordered_json options = ordered_json::object();
                     if (cur.type == Token::T_LPAREN) {
                         match(Token::T_LPAREN);
-                        // allow empty parentheses
                         while (cur.type != Token::T_RPAREN) {
-                            if (cur.type != Token::T_IDENTIFIER) {
-                                throw JZError("Expected option name in tool options");
-                            }
+                            if (cur.type != Token::T_IDENTIFIER)
+                                throw JZError("Expected option name in tool options", cur.line, cur.col);
                             string optname = cur.text;
                             cur = lex.next();
-                            consume(Token::T_ASSIGN, "'=' in tool option");
-                            // parse expression for the option value
-                            Value optval = parse_expr();
+                            if (cur.type != Token::T_ASSIGN)
+                                throw JZError("Expected '=' in tool option", cur.line, cur.col);
+                            cur = lex.next();
+                            Value optval = parse_expr(); // respects enable_tools
                             options[optname] = optval.j;
                             if (cur.type == Token::T_COMMA) {
                                 match(Token::T_COMMA);
                                 continue;
-                            } else if (cur.type == Token::T_RPAREN) {
-                                break;
-                            } else {
-                                // tolerate missing comma, break to avoid infinite loop
-                                break;
-                            }
+                            } else if (cur.type == Token::T_RPAREN) break;
                         }
-                        consume(Token::T_RPAREN, "')' after tool options");
+                        consume(Token::T_RPAREN, ")");
                     }
 
-                    // parse optional context block { ... } raw (balanced) and attempt to parse to JSON5 -> ordered_json
                     ordered_json ctx = ordered_json::object();
                     if (cur.type == Token::T_LBRACE) {
-                        // lexer current position is after '{' (lex.i). find matching '}' pos.
-                        size_t block_start = lex.i; // position after '{'
-                        size_t block_end = find_matching_brace_pos(); // position of matching '}' char
-                        string raw_block = lex.s.substr(block_start, block_end - block_start);
-                        // advance lexer index to position after '}'
+                        size_t block_start = lex.i;
+                        size_t block_end = find_matching_brace_pos_in_source();
+                        auto raw_block = string(lex.s.substr(block_start, block_end - block_start));
                         lex.i = block_end + 1;
+                        for (char ch: raw_block) {
+                            if (ch == '\n') {
+                                ++lex.line;
+                                lex.col = 1;
+                            } else { ++lex.col; }
+                        }
+                        if (block_end < lex.s.size() && lex.s[block_end] == '}') { ++lex.col; }
                         cur = lex.next();
-
-                        // try to normalize and parse raw_block as jz fragment (JSON5 -> ordered_json)
                         try {
                             string normalized = Processor::normalize_json5_to_json(raw_block);
-                            ordered_json parsed_block = ordered_json::parse(normalized);
-                            ctx = parsed_block;
+                            ctx = ordered_json::parse(normalized);
                         } catch (...) {
-                            // parsing failed: provide raw string in ctx
                             ctx = ordered_json::object();
                             ctx["__raw_block__"] = raw_block;
                         }
                     }
 
-                    // run tool only if input is not the undefined sentinel
                     if (is_undefined(left)) {
-                        // preserve undefined sentinel — do not call the tool(s)
-                        // left remains unchanged (still undefined)
-                    } else {
+                        // keep undefined sentinel; skip calling the tool
+                    } else if (enable_tools) {
                         ordered_json in_val = left.j;
                         ordered_json out_val;
                         try {
                             out_val = ToolsManager::instance().run_tool(toolname, in_val, options, ctx);
                         } catch (const std::exception &e) {
-                            throw JZError(string("Tool '") + toolname + "' failed: " + e.what());
+                            throw JZError(std::format("Tool '{}' failed: {}", toolname, e.what()), cur.line, cur.col);
                         }
                         left = Value::from_json(std::move(out_val));
+                    } else {
+                        // tools disabled: parse syntactically, do not execute; leave 'left' unchanged
                     }
                 }
                 return left;
             }
 
-            // Primary: literals, identifiers/paths, parenthesis
             Value parse_primary() {
                 switch (cur.type) {
                     case Token::T_LPAREN: {
@@ -1048,120 +1171,109 @@ namespace jz {
                         return Value::from_json(ordered_json(nullptr));
                     case Token::T_UNDEFINED: {
                         cur = lex.next();
-                        return Value::from_json(::jz::undefined());
+                        return Value::from_json(undefined_sentinel());
                     }
                     case Token::T_IDENTIFIER: {
-                        // path: id(.id | [index|string])*
                         vector<string> parts;
                         parts.push_back(cur.text);
                         cur = lex.next();
                         while (cur.type == Token::T_DOT || cur.type == Token::T_LBRACKET) {
                             if (cur.type == Token::T_DOT) {
                                 match(Token::T_DOT);
-                                if (cur.type != Token::T_IDENTIFIER) {
-                                    throw JZError("Expected identifier after '.' in path");
-                                }
+                                if (cur.type != Token::T_IDENTIFIER)
+                                    throw JZError(
+                                        "Expected identifier after '.' in path", cur.line, cur.col);
                                 parts.push_back(cur.text);
                                 cur = lex.next();
                             } else {
-                                // [ number ] or [ "string" ] or [ 'string' ]
                                 match(Token::T_LBRACKET);
                                 if (cur.type == Token::T_NUMBER) {
-                                    // push the numeric index as string (resolve_path will detect numeric)
                                     parts.push_back(cur.text);
                                     cur = lex.next();
                                 } else if (cur.type == Token::T_STRING) {
-                                    // string key
                                     parts.push_back(cur.text);
                                     cur = lex.next();
-                                } else {
-                                    throw JZError("Expected number or string inside [...] in path");
-                                }
+                                } else
+                                    throw JZError("Expected number or string inside [...] in path", cur.line,
+                                                  cur.col);
                                 consume(Token::T_RBRACKET, "']'");
                             }
                         }
                         return resolve_path(parts);
                     }
-                    default: {
-                        throw JZError("Unexpected token in expression");
-                    }
+                    default:
+                        throw JZError("Unexpected token in expression", cur.line, cur.col);
                 }
             }
 
-            // Resolve path into Value (handles arrays indices)
-            Value resolve_path(const vector<string> &parts) {
+            Value resolve_path(const vector<string> &parts) const {
                 const ordered_json *curj = &data;
                 for (const auto &p: parts) {
-                    bool is_index = !p.empty() && std::all_of(p.begin(), p.end(), ::isdigit);
+                    bool is_index = !p.empty() && ranges::all_of(p, ::isdigit);
                     if (curj->is_array() && is_index) {
-                        size_t idx = static_cast<size_t>(std::stoull(p));
-                        if (idx >= curj->size()) {
-                            return Value::missing_value();
-                        }
+                        size_t idx = static_cast<size_t>(stoull(p));
+                        if (idx >= curj->size()) return Value::missing_value();
                         curj = &((*curj)[idx]);
                     } else if (curj->is_object()) {
                         auto it = curj->find(p);
-                        if (it == curj->end()) {
-                            return Value::missing_value();
-                        }
+                        if (it == curj->end()) return Value::missing_value();
                         curj = &(*it);
-                    } else {
-                        return Value::missing_value();
-                    }
+                    } else return Value::missing_value();
                 }
-                // If the value found in the provided data is the undefined sentinel, return it (not `missing`).
-                if (is_undefined_sentinel(*curj)) {
-                    return Value::from_json(*curj);
-                }
+                if (is_undefined_sentinel(*curj)) return Value::from_json(*curj);
                 return Value::from_json(*curj);
             }
-        };
 
-        static ordered_json evaluate_expression(const string &expr, const ordered_json &data, bool &was_missing) {
-            Parser p(expr, data);
-            Value v = p.parse_expr();
-            was_missing = v.missing;
-            return v.j;
-        }
+            // evaluate expression helper
+            static ordered_json evaluate_expression(string_view expr, const ordered_json &data, bool &was_missing) {
+                Parser p(expr, data);
+                Value v = p.parse_expr();
+                was_missing = v.missing;
+                return v.j;
+            }
+        }; // end Parser
     } // namespace eval
 
-    // Helper: escape a text as a JSON string literal using ordered_json
+    /* -------------------------
+       Template placeholder replacement
+       - supports $(expr) -> JSON insertion
+       - backtick strings: `...` where $(...) expressions inside are evaluated and resulting string inserted (then JSON-escaped)
+       - throws JZError with positions when unterminated templates/expressions found
+       ------------------------- */
+
     static string to_json_string_literal(const string &text) {
         return ordered_json(text).dump();
     }
 
-    // Helper: convert JSON value to plain text to be inserted into a template string
+    // helper to append value for template (if string => raw text, else JSON dump)
     static void append_value_for_template(string &acc, const ordered_json &val) {
         if (val.is_null()) return;
-        if (is_undefined_sentinel(val)) return; // treat undefined as empty text in templates
-        if (val.is_string()) {
-            acc += val.get_ref<const string &>();
-        } else {
-            acc += val.dump();
-        }
+        if (is_undefined_sentinel(val)) return;
+        if (val.is_string()) acc += val.get_ref<const string &>();
+        else acc += val.dump();
     }
 
-    string Processor::replace_placeholders_impl(const string &s, const ordered_json &data) {
+    string Processor::replace_placeholders(string_view s, const ordered_json &data) {
+        // similar behavior as earlier implementation but using string_view and Scanner for pos tracking
         string out;
         out.reserve(s.size());
+        Scanner sc{s};
 
         bool in_string = false;
         char delim = 0;
         bool escape = false;
 
-        for (size_t i = 0; i < s.size(); ++i) {
-            char c = s[i];
+        while (!sc.eof()) {
+            char c = sc.next();
 
-            // Handle backtick template strings with interpolation using $(...)
+            // handle backtick template: `...`
             if (!in_string && c == '`') {
-                string acc; // accumulate plain text content
+                string acc;
                 bool esc = false;
-                size_t j = i + 1;
-
-                while (j < s.size()) {
-                    char ch = s[j++];
+                auto start_pos = sc.position_prev();
+                while (!sc.eof()) {
+                    char ch = sc.next();
                     if (esc) {
-                        // Keep escaped char literally
                         acc.push_back(ch);
                         esc = false;
                         continue;
@@ -1170,78 +1282,71 @@ namespace jz {
                         esc = true;
                         continue;
                     }
-                    if (ch == '`') {
-                        // end of template
-                        break;
-                    }
-                    if (ch == '$' && j < s.size() && s[j] == '(') {
-                        // parse $(...)
-                        ++j; // skip '('
+                    if (ch == '`') break;
+                    if (ch == '$' && sc.peek() == '(') {
+                        sc.advance(); // skip '('
+                        // find matching ')' with nested parentheses and string awareness
                         int depth = 1;
-                        bool ex_str_in = false;
-                        bool ex_str_esc = false;
+                        bool ex_in_str = false;
+                        bool ex_esc = false;
                         char ex_delim = 0;
-                        size_t expr_start = j;
-
-                        while (j < s.size()) {
-                            char ec = s[j++];
-                            if (ex_str_in) {
-                                if (ex_str_esc) {
-                                    ex_str_esc = false;
-                                } else if (ec == '\\') {
-                                    ex_str_esc = true;
-                                } else if (ec == ex_delim) {
-                                    ex_str_in = false;
+                        size_t expr_start_idx = sc.pos();
+                        size_t expr_start_line = sc.line, expr_start_col = sc.col;
+                        while (!sc.eof()) {
+                            char ec = sc.next();
+                            if (ex_in_str) {
+                                if (ex_esc) {
+                                    ex_esc = false;
+                                    continue;
+                                }
+                                if (ec == '\\') {
+                                    ex_esc = true;
+                                    continue;
+                                }
+                                if (ec == ex_delim) {
+                                    ex_in_str = false;
+                                    ex_delim = 0;
+                                    continue;
                                 }
                                 continue;
-                            }
-                            if (ec == '"' || ec == '\'') {
-                                ex_str_in = true;
-                                ex_delim = ec;
-                                continue;
-                            }
-                            if (ec == '(') depth++;
-                            else if (ec == ')') {
-                                depth--;
-                                if (depth == 0) break;
+                            } else {
+                                if (ec == '"' || ec == '\'') {
+                                    ex_in_str = true;
+                                    ex_delim = ec;
+                                    continue;
+                                }
+                                if (ec == '(') ++depth;
+                                else if (ec == ')') { if (--depth == 0) break; }
                             }
                         }
-                        if (j >= s.size()) throw JZError("Unterminated $(...) in template string");
-                        size_t expr_end = j - 1;
-                        string expr = s.substr(expr_start, expr_end - expr_start);
-
+                        if (sc.eof()) {
+                            throw JZError("Unterminated $(...) in template string", expr_start_line, expr_start_col);
+                        }
+                        size_t expr_end_idx = sc.pos() - 1;
+                        auto expr = string(sc.s.substr(expr_start_idx, expr_end_idx - expr_start_idx));
                         bool missing = false;
-                        ordered_json val = eval::evaluate_expression(expr, data, missing);
-                        if (!missing && !val.is_null() && !is_undefined_sentinel(val)) {
-                            append_value_for_template(acc, val);
-                        }
-                        // if missing or null or undefined -> append nothing (template treats them as empty)
+                        ordered_json val = eval::Parser::evaluate_expression(expr, data, missing);
+                        if (!missing && !val.is_null() && !is_undefined_sentinel(val))
+                            append_value_for_template(
+                                acc, val);
                         continue;
                     }
-
-                    // normal char
                     acc.push_back(ch);
                 }
-
-                if (j >= s.size()) {
-                    throw JZError("Unterminated template string (`...`)");
+                if (sc.eof()) {
+                    throw JZError("Unterminated template string (`...`)", start_pos.first, start_pos.second);
                 }
-
-                // Emit as a proper JSON string
+                // produce JSON string literal from acc
                 out += ordered_json(acc).dump();
-                i = j - 1; // position on closing backtick
                 continue;
             }
 
             if (in_string) {
-                // Inside normal string (" or ') -> NO interpolation, copy literally
                 out.push_back(c);
-                if (escape) {
-                    escape = false;
-                } else {
-                    if (c == '\\') {
-                        escape = true;
-                    } else if (c == delim) {
+                if (escape) escape = false;
+                else {
+                    if (c == '\\') escape = true;
+                    else if (c == delim) {
                         in_string = false;
                         delim = 0;
                     }
@@ -1249,7 +1354,6 @@ namespace jz {
                 continue;
             }
 
-            // Start of normal string?
             if (c == '"' || c == '\'') {
                 in_string = true;
                 delim = c;
@@ -1257,57 +1361,59 @@ namespace jz {
                 continue;
             }
 
-            if (c == '#' && i + 1 < s.size() && s[i + 1] == '{') {
-                // Reserved for future
-                throw JZError("Encountered '#{...}' directive which is not supported yet");
+            if (c == '#' && sc.peek() == '{') {
+                auto [ln, col] = sc.position_prev();
+                throw JZError("Encountered '#{...}' directive which is not supported", ln, col);
             }
 
-            if (c == '$' && i + 1 < s.size() && s[i + 1] == '(') {
-                // Standalone placeholder -> replace with JSON literal
-                size_t j = i + 2;
+            // handle $(expr) replacement
+            if (c == '$' && sc.peek() == '(') {
+                // remember start position for error reporting
+                auto start_pos = sc.position_prev();
+                sc.advance(); // skip '('
                 int depth = 1;
-                bool str_esc = false;
                 bool str_in = false;
+                bool str_esc = false;
                 char str_delim = 0;
-
-                for (; j < s.size(); ++j) {
-                    char ch = s[j];
+                size_t expr_start_idx = sc.pos();
+                size_t expr_start_line = sc.line, expr_start_col = sc.col;
+                while (!sc.eof()) {
+                    char ch = sc.next();
                     if (str_in) {
                         if (str_esc) {
                             str_esc = false;
-                        } else if (ch == '\\') {
+                            continue;
+                        }
+                        if (ch == '\\') {
                             str_esc = true;
-                        } else if (ch == str_delim) {
+                            continue;
+                        }
+                        if (ch == str_delim) {
                             str_in = false;
+                            str_delim = 0;
+                            continue;
                         }
                         continue;
-                    }
-                    if (ch == '"' || ch == '\'') {
-                        str_in = true;
-                        str_delim = ch;
-                        continue;
-                    }
-                    if (ch == '(') depth++;
-                    else if (ch == ')') {
-                        depth--;
-                        if (depth == 0) break;
-                    }
-                }
-                if (j >= s.size()) throw JZError("Unterminated $(...) placeholder");
-                string expr = s.substr(i + 2, j - (i + 2));
-                bool missing = false;
-                ordered_json val = eval::evaluate_expression(expr, data, missing);
-                if (missing) {
-                    // missing now treated as undefined sentinel
-                    out += undefined().dump();
-                } else {
-                    if (is_undefined_sentinel(val)) {
-                        out += undefined().dump();
                     } else {
-                        out += val.dump();
+                        if (ch == '"' || ch == '\'') {
+                            str_in = true;
+                            str_delim = ch;
+                            continue;
+                        }
+                        if (ch == '(') ++depth;
+                        else if (ch == ')') { if (--depth == 0) break; }
                     }
                 }
-                i = j; // skip to ')'
+                if (sc.eof()) throw JZError("Unterminated $(...) placeholder", expr_start_line, expr_start_col);
+                size_t expr_end_idx = sc.pos() - 1;
+                string expr = string(sc.s.substr(expr_start_idx, expr_end_idx - expr_start_idx));
+                bool missing = false;
+                ordered_json val = eval::Parser::evaluate_expression(expr, data, missing);
+                if (missing) out += undefined_sentinel().dump();
+                else {
+                    if (is_undefined_sentinel(val)) out += undefined_sentinel().dump();
+                    else out += val.dump();
+                }
                 continue;
             }
 
@@ -1317,65 +1423,60 @@ namespace jz {
         return out;
     }
 
-    string Processor::replace_placeholders(const string &s, const ordered_json &data) {
-        return replace_placeholders_impl(s, data);
-    }
-
-    // ---------- Remove undefined sentinels from parsed ordered_json ----------
-    // UPDATED: Arrays now have undefined elements FILTERED OUT (removed) instead of converted to null.
+    /* remove_undefined_sentinels:
+       - remove object properties with the undefined sentinel
+       - filter out undefined sentinel elements from arrays
+    */
     void Processor::remove_undefined_sentinels(ordered_json &j) {
         if (j.is_object()) {
-            // Collect keys to erase to avoid modifying while iterating
             vector<string> to_erase;
             for (auto it = j.begin(); it != j.end(); ++it) {
                 const string key = it.key();
                 ordered_json &val = it.value();
-                if (is_undefined_sentinel(val)) {
-                    to_erase.push_back(key);
-                } else {
-                    remove_undefined_sentinels(val);
-                }
+                if (is_undefined_sentinel(val)) to_erase.push_back(key);
+                else remove_undefined_sentinels(val);
             }
-            for (const auto &k: to_erase) {
-                j.erase(k);
-            }
+            for (const auto &k: to_erase) j.erase(k);
         } else if (j.is_array()) {
-            // New logic: remove elements that are sentinel undefined, recursively clean remaining elements.
             ordered_json new_arr = ordered_json::array();
-            // new_arr.reserve(j.size());
             for (auto &el: j) {
-                if (is_undefined_sentinel(el)) {
-                    // skip (remove)
-                    continue;
-                }
+                if (is_undefined_sentinel(el)) continue;
                 remove_undefined_sentinels(el);
                 new_arr.push_back(std::move(el));
             }
             j = std::move(new_arr);
-        } else {
-            // primitives: nothing to do
         }
     }
 
-    // ---------- Public API ----------
-    // Modified: now returns ordered_json (ordered_json alias) instead of serialized string.
-    // This version integrates the expression evaluator which supports tool pipelines.
-    ordered_json Processor::to_json(const string &jz_input, const ordered_json &data) {
-        // 1) Remove comments (supports backtick strings)
-        auto no_comments = remove_comments(jz_input);
-        // 2) Evaluate placeholders and template string `...` with $(...)
-        auto with_values = replace_placeholders(no_comments, data);
-        // 3) Normalize JSON5 -> JSON (single quotes, unquoted keys, trailing commas)
+    /* -------------------------
+       Public API: to_json
+       1) remove comments
+       2) replace placeholders / evaluate templates
+       3) normalize json5-like to JSON
+       4) parse into ordered_json
+       5) remove undefined sentinels
+       ------------------------- */
+    ordered_json Processor::to_json(string_view jz_input, const ordered_json &data) {
+        // 1) comments
+        const auto no_comments = remove_comments(jz_input);
+
+        // 2) placeholders and backtick templates
+        const auto with_values = replace_placeholders(no_comments, data);
+
+        // 3) normalize JSON5-ish constructs
         auto jsonish = normalize_json5_to_json(with_values);
 
         try {
-            // 4) Parse
-            auto j = ordered_json::parse(jsonish);
-            // 5) Remove undefined sentinels and filter arrays
+            // parse -> note: nlohmann::json parse takes std::string
+            ordered_json j = ordered_json::parse(jsonish);
+            // 4) remove undefined sentinels
             remove_undefined_sentinels(j);
             return j;
         } catch (const std::exception &e) {
-            throw JZError(std::format("Invalid JSON after JZ transform: {}\n{}", e.what(), jsonish));
+            // we want to throw JZError including message and (approx) first line/col of failure
+            // find position by naive heuristics: look for first occurrence of problematic substring
+            // For simplicity, throw with line 1 col 1 (could be improved by analyzing exception message)
+            throw JZError(std::format("Invalid JSON after JZ transform: {}", e.what()), jsonish);
         }
     }
 } // namespace jz

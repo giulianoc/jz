@@ -1,5 +1,6 @@
 #pragma once
 #include <nlohmann/json_fwd.hpp>
+#include <functional>
 
 using ordered_json = nlohmann::ordered_json;
 

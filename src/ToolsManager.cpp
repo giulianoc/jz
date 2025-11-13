@@ -3,6 +3,7 @@
 #include "tools/DateTools.hpp"
 #include "tools/StringTools.hpp"
 #include <algorithm>
+#include <mutex>
 #include <locale>
 #include <sstream>
 #include <stdexcept>

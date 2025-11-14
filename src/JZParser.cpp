@@ -1099,26 +1099,32 @@ namespace jz {
 
                     ordered_json ctx = ordered_json::object();
                     if (cur.type == Token::T_LBRACE) {
-                        size_t block_start = lex.i;
-                        size_t block_end = find_matching_brace_pos_in_source();
-                        auto raw_block = "{" + string(lex.s.substr(block_start, block_end - block_start)) + "}";
-                        lex.i = block_end + 1;
-                        for (char ch: raw_block) {
-                            if (ch == '\n') {
-                                ++lex.line;
-                                lex.col = 1;
-                            } else { ++lex.col; }
-                        }
-                        if (block_end < lex.s.size() && lex.s[block_end] == '}') { ++lex.col; }
-                        cur = lex.next();
                         try {
-                            ctx = Processor::to_json(raw_block, data, metadata);
-                            // string normalized = Processor::normalize_json5_to_json(raw_block);
-                            // ctx = ordered_json::parse(normalized);
+                            size_t block_start = lex.i;
+                            size_t block_end = find_matching_brace_pos_in_source();
+                            auto raw_block = "{" + string(lex.s.substr(block_start, block_end - block_start)) + "}";
+                            lex.i = block_end + 1;
+                            for (char ch: raw_block) {
+                                if (ch == '\n') {
+                                    ++lex.line;
+                                    lex.col = 1;
+                                } else { ++lex.col; }
+                            }
+                            if (block_end < lex.s.size() && lex.s[block_end] == '}') { ++lex.col; }
+                            cur = lex.next();
+                            if (toolname.starts_with("$")) {
+                                ordered_json _data(data);
+                                _data.merge_patch(left.j);
+                                ctx = Processor::to_json(raw_block, _data, metadata);
+                            } else {
+                                ctx = Processor::to_json(raw_block, data, metadata);
+                            }
                         } catch (exception &e) {
-                            ctx = ordered_json::object();
-                            ctx["__raw_block__"] = raw_block;
-                            ctx["__error__"] = e.what();
+                            throw JZError(std::format("Tool '{}' error parsing context: [{}]", toolname, e.what()),
+                                          cur.line, cur.col);
+                            // ctx = ordered_json::object();
+                            // ctx["__raw_block__"] = raw_block;
+                            // ctx["__error__"] = e.what();
                         }
                     }
 
@@ -1128,7 +1134,12 @@ namespace jz {
                         ordered_json in_val = left.j;
                         ordered_json out_val;
                         try {
-                            out_val = ToolsManager::instance().run_tool(toolname, in_val, options, ctx, metadata);
+                            if (toolname == "$") {
+                                out_val = ctx;
+                            } else {
+                                const auto _toolname = toolname.starts_with("$") ? toolname.substr(1) : toolname;
+                                out_val = ToolsManager::instance().run_tool(_toolname, in_val, options, ctx, metadata);
+                            }
                         } catch (const std::exception &e) {
                             throw JZError(std::format("Tool '{}' failed: {}", toolname, e.what()), cur.line, cur.col);
                         }
@@ -1139,9 +1150,6 @@ namespace jz {
                 }
                 return left;
             }
-
-            // c++
-            /* Inside struct jz::eval::Parser */
 
             Value parse_primary() {
                 switch (cur.type) {
@@ -1215,7 +1223,6 @@ namespace jz {
                         throw JZError("Unexpected token in expression", cur.line, cur.col);
                 }
             }
-
 
             [[nodiscard]] Value resolve_path(const vector<string> &parts) const {
                 const ordered_json *curj = &data;

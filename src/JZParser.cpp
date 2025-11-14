@@ -56,7 +56,7 @@ namespace jz {
     }
 
     // safe whitespace test
-    static inline bool is_space_char(char c) noexcept {
+    static bool is_space_char(const char c) noexcept {
         return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
     }
 
@@ -1431,7 +1431,7 @@ namespace jz {
         if (j.is_object()) {
             vector<string> to_erase;
             for (auto it = j.begin(); it != j.end(); ++it) {
-                const string key = it.key();
+                const string &key = it.key();
                 ordered_json &val = it.value();
                 if (is_undefined_sentinel(val)) to_erase.push_back(key);
                 else remove_undefined_sentinels(val);
@@ -1452,24 +1452,29 @@ namespace jz {
        Public API: to_json
        1) remove comments
        2) replace placeholders / evaluate templates
-       3) normalize json5-like to JSON
-       4) parse into ordered_json
-       5) remove undefined sentinels
        ------------------------- */
-    ordered_json Processor::to_json(string_view jz_input, const ordered_json &data) {
+    string Processor::to_string(const string_view jz_input, const ordered_json &data) {
         // 1) comments
         const auto no_comments = remove_comments(jz_input);
 
         // 2) placeholders and backtick templates
-        const auto with_values = replace_placeholders(no_comments, data);
+        return replace_placeholders(no_comments, data);
+    }
 
-        // 3) normalize JSON5-ish constructs
-        auto jsonish = normalize_json5_to_json(with_values);
+    /* -------------------------
+       Public API: to_json
+       1) to_string
+       2) parse into ordered_json
+       3) remove undefined sentinels
+       ------------------------- */
+    ordered_json Processor::to_json(const string_view jz_input, const ordered_json &data) {
+        // 1) comments
+        auto jsonish = to_string(jz_input, data);
 
         try {
-            // parse -> note: nlohmann::json parse takes std::string
+            // 2) parse -> note: nlohmann::json parse takes std::string
             ordered_json j = ordered_json::parse(jsonish);
-            // 4) remove undefined sentinels
+            // 3) remove undefined sentinels
             remove_undefined_sentinels(j);
             return j;
         } catch (const std::exception &e) {

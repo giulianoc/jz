@@ -45,6 +45,10 @@ namespace jz {
      - many helper methods are static and internal-use; kept public static to match previous usage style.
     */
     struct Processor {
+        // Public API: convert a jz template (jz_input) into string, using `data` as the input context.
+        // Throws JZError on parse/eval/formatting errors.
+        static string to_string(string_view jz_input, const ordered_json &data);
+
         // Public API: convert a jz template (jz_input) into JSON, using `data` as the input context.
         // Throws JZError on parse/eval/formatting errors.
         static ordered_json to_json(std::string_view jz_input, const ordered_json &data);

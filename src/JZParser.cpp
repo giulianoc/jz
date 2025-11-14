@@ -200,18 +200,35 @@ namespace jz {
             if (in_line_comment) {
                 if (c == '\n') {
                     in_line_comment = false;
-                    out.push_back(c);
+                    out.push_back(c); // preserve newline
                 } else {
-                    // skip characters in line comment
+                    // skip character inside line comment
                 }
                 continue;
             }
 
             if (in_block_comment) {
+                // preserve newlines inside block comments so line numbers remain aligned
+                if (c == '\n') {
+                    out.push_back('\n');
+                    continue;
+                }
+                // handle CRLF: if we see '\r' and next is '\n', treat as newline
+                if (c == '\r') {
+                    if (nextc == '\n') {
+                        // consume the '\n' in the next loop iteration (sc.next() will do it),
+                        // but append a newline now so we preserve line count.
+                        out.push_back('\n');
+                    } else {
+                        out.push_back('\n');
+                    }
+                    continue;
+                }
                 if (c == '*' && nextc == '/') {
                     sc.advance(); // skip '/'
                     in_block_comment = false;
                 }
+                // otherwise skip other chars inside comment (do not append)
                 continue;
             }
 
@@ -250,7 +267,7 @@ namespace jz {
         }
 
         if (in_block_comment) {
-            // block comment didn't close; position at end
+            // unterminated block comment: report position at previous character
             auto [ln, col] = sc.position_prev();
             throw JZError("Unterminated block comment", ln, col);
         }

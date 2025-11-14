@@ -866,6 +866,7 @@ namespace jz {
         struct Parser {
             Lexer lex;
             Token cur;
+            json &metadata;
             const ordered_json &data;
 
             // NEW: gate to enable/disable tool execution during parsing
@@ -882,16 +883,18 @@ namespace jz {
                 ~ToolExecScope() { self->enable_tools = prev; }
             };
 
-            explicit Parser(string_view expr, const ordered_json &d) : lex(expr), data(d) { cur = lex.next(); }
+            explicit Parser(const string_view expr, const ordered_json &d, json &m) : lex(expr), metadata(m), data(d) {
+                cur = lex.next();
+            }
 
-            void consume(Token::Type t, const char *what) {
+            void consume(const Token::Type t, const char *what) {
                 if (cur.type != t) {
                     throw JZError(std::format("Expected {} in expression", what), cur.line, cur.col);
                 }
                 cur = lex.next();
             }
 
-            bool match(Token::Type t) {
+            bool match(const Token::Type t) {
                 if (cur.type == t) {
                     cur = lex.next();
                     return true;
@@ -900,7 +903,7 @@ namespace jz {
             }
 
             // find matching brace position in raw lexer input (used to extract {...} tool context)
-            size_t find_matching_brace_pos_in_source() const {
+            [[nodiscard]] size_t find_matching_brace_pos_in_source() const {
                 // operate on lex.s directly; start at lex.i (current position points after '{')
                 const string_view &s = lex.s;
                 size_t pos = lex.i;
@@ -1052,7 +1055,7 @@ namespace jz {
             Value parse_unary() {
                 if (cur.type == Token::T_NOT) {
                     match(Token::T_NOT);
-                    Value v = parse_unary();
+                    const Value v = parse_unary();
                     bool r = !is_truthy(v);
                     return Value::from_json(ordered_json(r));
                 }
@@ -1098,7 +1101,7 @@ namespace jz {
                     if (cur.type == Token::T_LBRACE) {
                         size_t block_start = lex.i;
                         size_t block_end = find_matching_brace_pos_in_source();
-                        auto raw_block = string(lex.s.substr(block_start, block_end - block_start));
+                        auto raw_block = "{" + string(lex.s.substr(block_start, block_end - block_start)) + "}";
                         lex.i = block_end + 1;
                         for (char ch: raw_block) {
                             if (ch == '\n') {
@@ -1109,11 +1112,13 @@ namespace jz {
                         if (block_end < lex.s.size() && lex.s[block_end] == '}') { ++lex.col; }
                         cur = lex.next();
                         try {
-                            string normalized = Processor::normalize_json5_to_json(raw_block);
-                            ctx = ordered_json::parse(normalized);
-                        } catch (...) {
+                            ctx = Processor::to_json(raw_block, data, metadata);
+                            // string normalized = Processor::normalize_json5_to_json(raw_block);
+                            // ctx = ordered_json::parse(normalized);
+                        } catch (exception &e) {
                             ctx = ordered_json::object();
                             ctx["__raw_block__"] = raw_block;
+                            ctx["__error__"] = e.what();
                         }
                     }
 
@@ -1123,7 +1128,7 @@ namespace jz {
                         ordered_json in_val = left.j;
                         ordered_json out_val;
                         try {
-                            out_val = ToolsManager::instance().run_tool(toolname, in_val, options, ctx);
+                            out_val = ToolsManager::instance().run_tool(toolname, in_val, options, ctx, metadata);
                         } catch (const std::exception &e) {
                             throw JZError(std::format("Tool '{}' failed: {}", toolname, e.what()), cur.line, cur.col);
                         }
@@ -1135,8 +1140,16 @@ namespace jz {
                 return left;
             }
 
+            // c++
+            /* Inside struct jz::eval::Parser */
+
             Value parse_primary() {
                 switch (cur.type) {
+                    case Token::T_DOT: {
+                        // Allow '.' to represent the entire input object
+                        match(Token::T_DOT);
+                        return Value::from_json(data);
+                    }
                     case Token::T_LPAREN: {
                         match(Token::T_LPAREN);
                         Value v = parse_expr();
@@ -1155,10 +1168,9 @@ namespace jz {
                             if (n.find_first_of(".eE") != string::npos) {
                                 double d = stod(n);
                                 return Value::from_json(ordered_json(d));
-                            } else {
-                                long long v = stoll(n);
-                                return Value::from_json(ordered_json(v));
                             }
+                            long long v = stoll(n);
+                            return Value::from_json(ordered_json(v));
                         } catch (...) {
                             return Value::from_json(ordered_json(n));
                         }
@@ -1181,8 +1193,7 @@ namespace jz {
                             if (cur.type == Token::T_DOT) {
                                 match(Token::T_DOT);
                                 if (cur.type != Token::T_IDENTIFIER)
-                                    throw JZError(
-                                        "Expected identifier after '.' in path", cur.line, cur.col);
+                                    throw JZError("Expected identifier after '.' in path", cur.line, cur.col);
                                 parts.push_back(cur.text);
                                 cur = lex.next();
                             } else {
@@ -1194,8 +1205,7 @@ namespace jz {
                                     parts.push_back(cur.text);
                                     cur = lex.next();
                                 } else
-                                    throw JZError("Expected number or string inside [...] in path", cur.line,
-                                                  cur.col);
+                                    throw JZError("Expected number or string inside [...] in path", cur.line, cur.col);
                                 consume(Token::T_RBRACKET, "']'");
                             }
                         }
@@ -1206,12 +1216,13 @@ namespace jz {
                 }
             }
 
-            Value resolve_path(const vector<string> &parts) const {
+
+            [[nodiscard]] Value resolve_path(const vector<string> &parts) const {
                 const ordered_json *curj = &data;
                 for (const auto &p: parts) {
                     bool is_index = !p.empty() && ranges::all_of(p, ::isdigit);
                     if (curj->is_array() && is_index) {
-                        size_t idx = static_cast<size_t>(stoull(p));
+                        auto idx = static_cast<size_t>(stoull(p));
                         if (idx >= curj->size()) return Value::missing_value();
                         curj = &((*curj)[idx]);
                     } else if (curj->is_object()) {
@@ -1225,8 +1236,9 @@ namespace jz {
             }
 
             // evaluate expression helper
-            static ordered_json evaluate_expression(string_view expr, const ordered_json &data, bool &was_missing) {
-                Parser p(expr, data);
+            static ordered_json evaluate_expression(string_view expr, const ordered_json &data, json &metadata,
+                                                    bool &was_missing) {
+                Parser p(expr, data, metadata);
                 Value v = p.parse_expr();
                 was_missing = v.missing;
                 return v.j;
@@ -1253,7 +1265,7 @@ namespace jz {
         else acc += val.dump();
     }
 
-    string Processor::replace_placeholders(string_view s, const ordered_json &data) {
+    string Processor::replace_placeholders(string_view s, const ordered_json &data, json &metadata) {
         // similar behavior as earlier implementation but using string_view and Scanner for pos tracking
         string out;
         out.reserve(s.size());
@@ -1325,7 +1337,7 @@ namespace jz {
                         size_t expr_end_idx = sc.pos() - 1;
                         auto expr = string(sc.s.substr(expr_start_idx, expr_end_idx - expr_start_idx));
                         bool missing = false;
-                        ordered_json val = eval::Parser::evaluate_expression(expr, data, missing);
+                        ordered_json val = eval::Parser::evaluate_expression(expr, data, metadata, missing);
                         if (!missing && !val.is_null() && !is_undefined_sentinel(val))
                             append_value_for_template(
                                 acc, val);
@@ -1408,7 +1420,7 @@ namespace jz {
                 size_t expr_end_idx = sc.pos() - 1;
                 string expr = string(sc.s.substr(expr_start_idx, expr_end_idx - expr_start_idx));
                 bool missing = false;
-                ordered_json val = eval::Parser::evaluate_expression(expr, data, missing);
+                ordered_json val = eval::Parser::evaluate_expression(expr, data, metadata, missing);
                 if (missing) out += undefined_sentinel().dump();
                 else {
                     if (is_undefined_sentinel(val)) out += undefined_sentinel().dump();
@@ -1453,28 +1465,31 @@ namespace jz {
        1) remove comments
        2) replace placeholders / evaluate templates
        ------------------------- */
-    string Processor::to_string(const string_view jz_input, const ordered_json &data) {
+    string Processor::to_string(const string_view jz_input, const ordered_json &data, json &metadata) {
         // 1) comments
         const auto no_comments = remove_comments(jz_input);
 
         // 2) placeholders and backtick templates
-        return replace_placeholders(no_comments, data);
+        return replace_placeholders(no_comments, data, metadata);
     }
 
     /* -------------------------
        Public API: to_json
        1) to_string
-       2) parse into ordered_json
-       3) remove undefined sentinels
+       2) normalize json5-like to JSON
+       3) parse into ordered_json
+       4) remove undefined sentinels
        ------------------------- */
-    ordered_json Processor::to_json(const string_view jz_input, const ordered_json &data) {
-        // 1) comments
-        auto jsonish = to_string(jz_input, data);
+    ordered_json Processor::to_json(const string_view jz_input, const ordered_json &data, json &metadata) {
+        // 1) to_string
+        const auto with_values = to_string(jz_input, data, metadata);
 
+        // 2) normalize JSON5-ish constructs
+        auto jsonish = normalize_json5_to_json(with_values);
         try {
-            // 2) parse -> note: nlohmann::json parse takes std::string
+            // 3) parse -> note: nlohmann::json parse takes std::string
             ordered_json j = ordered_json::parse(jsonish);
-            // 3) remove undefined sentinels
+            // 4) remove undefined sentinels
             remove_undefined_sentinels(j);
             return j;
         } catch (const std::exception &e) {

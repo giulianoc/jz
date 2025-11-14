@@ -21,15 +21,16 @@ void StringTools::init() {
  * @param input The input JSON structure.
  * @param options Options dictating how to traverse and apply the operation (see traverse).
  * @param ctx Context (not used in this function).
+ * @param metadata Metadata (not used in this function).
  * @return The transformed JSON structure with strings converted to uppercase.
  */
-ordered_json StringTools::upper(const ordered_json &input, const ordered_json &options, const ordered_json &ctx) {
+ordered_json StringTools::upper(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
     // cerr << "upper:" << input.dump() << endl;
     auto operation = [](string s) {
         ranges::transform(s, s.begin(), [](const unsigned char c) { return toupper(c); });
         return s;
     };
-    return traverse(operation, input, options, ctx);
+    return _traverse(operation, input, options, ctx);
 }
 
 /**
@@ -38,15 +39,16 @@ ordered_json StringTools::upper(const ordered_json &input, const ordered_json &o
  * @param input The input JSON structure.
  * @param options Options dictating how to traverse and apply the operation (see traverse).
  * @param ctx Context (not used in this function).
+ * @param metadata Metadata (not used in this function).
  * @return The transformed JSON structure with strings converted to lowercase.
  */
-ordered_json StringTools::lower(const ordered_json &input, const ordered_json &options, const ordered_json &ctx) {
+ordered_json StringTools::lower(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
     // cerr << "lower:" << input.dump() << endl;
     auto operation = [](string s) {
         ranges::transform(s, s.begin(), [](const unsigned char c) { return tolower(c); });
         return s;
     };
-    return traverse(operation, input, options, ctx);
+    return _traverse(operation, input, options, ctx);
 }
 
 /**
@@ -58,9 +60,10 @@ ordered_json StringTools::lower(const ordered_json &input, const ordered_json &o
  *                  forceLower: bool (default: true) - whether to lowercase the entire string before capitalizing
  *                  (see traverse for other options)
  * @param ctx Context (not used in this function).
+ * @param metadata Metadata (not used in this function).
  * @return The transformed JSON structure with strings capitalized.
  */
-ordered_json StringTools::capitalize(const ordered_json &input, const ordered_json &options, const ordered_json &ctx) {
+ordered_json StringTools::capitalize(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
     // cerr << "capitalize:" << input.dump() << endl;
     bool firstOnly = false, forceLower = true;
     if (options.is_object()) {
@@ -95,7 +98,7 @@ ordered_json StringTools::capitalize(const ordered_json &input, const ordered_js
 
         return result;
     };
-    return traverse(operation, input, options, ctx);
+    return _traverse(operation, input, options, ctx);
 }
 
 /**
@@ -110,7 +113,7 @@ ordered_json StringTools::capitalize(const ordered_json &input, const ordered_js
  * @param ctx Context (not used in this function).
  * @return The transformed JSON structure.
  */
-ordered_json StringTools::traverse(const function<string(string)> &operation,
+ordered_json StringTools::_traverse(const function<string(string)> &operation,
                                    const ordered_json &input,
                                    const ordered_json &options,
                                    const ordered_json &ctx) {
@@ -132,7 +135,7 @@ ordered_json StringTools::traverse(const function<string(string)> &operation,
     if ((traverse_mode == "array" || traverse_mode == "both") && input.is_array()) {
         ordered_json array = ordered_json::array();
         for (const auto &el: input) {
-            array.push_back(traverse(operation, el, options, ctx));
+            array.push_back(_traverse(operation, el, options, ctx));
         }
         return array;
     }
@@ -151,7 +154,7 @@ ordered_json StringTools::traverse(const function<string(string)> &operation,
             }
 
             if (kv_mode == "value" || kv_mode == "both") {
-                object[new_key] = traverse(operation, value, options, ctx);
+                object[new_key] = _traverse(operation, value, options, ctx);
             } else {
                 object[new_key] = value;
             }

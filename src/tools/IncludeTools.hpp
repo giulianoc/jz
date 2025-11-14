@@ -13,9 +13,17 @@ namespace jz {
 
         virtual ~IncludeTools() = default;
 
-        ordered_json operator()(const ordered_json &input, const ordered_json &options, const ordered_json &ctx) const;
+        static void init();
+
+        ordered_json operator()(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                                json &metadata) const;
 
     protected:
-        virtual std::string getInclude(const ordered_json &options, const ordered_json &data) const = 0;
+        [[nodiscard]] virtual std::string getInclude(const ordered_json &options, const ordered_json &data,
+                                                     json &metadata) const = 0;
+
+    private:
+        static ordered_json merge(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                                  json &metadata);
     };
 }

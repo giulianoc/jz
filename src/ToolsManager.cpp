@@ -9,6 +9,8 @@
 #include <stdexcept>
 #include <iostream>
 
+#include "tools/IncludeTools.hpp"
+
 using namespace std;
 using namespace jz;
 
@@ -19,6 +21,7 @@ ToolsManager &ToolsManager::instance() {
         _toolsInitialized = true;
         ArrayTools::init();
         DateTools::init();
+        IncludeTools::init();
         StringTools::init();
     }
     return inst;
@@ -31,14 +34,14 @@ void ToolsManager::register_tool(const std::string &name, ToolFunction fn) {
 }
 
 ordered_json ToolsManager::run_tool(const std::string &name, const ordered_json &input, const ordered_json &options,
-                                    const ordered_json &ctx) {
+                                    const ordered_json &ctx, json &metadata) {
     const string key = normalize_tool_name(name);
     shared_lock locker(_registryMutex);
     const auto it = _registry.find(key);
     if (it == _registry.end()) {
         throw std::runtime_error("Unknown tool: " + name);
     }
-    return it->second(input, options, ctx);
+    return it->second(input, options, ctx, metadata);
 }
 
 bool ToolsManager::has_tool(const std::string &name) {

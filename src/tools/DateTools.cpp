@@ -20,9 +20,10 @@ void DateTools::init() {
  * @param options Options dictating the format string:
  *                  format: string (default: "%Y-%m-%d %H:%M:%S") - the date format string.
  * @param ctx Context (not used in this function).
+ * @param metadata Metadata (not used in this function).
  * @return The formatted date string.
  */
-ordered_json DateTools::dateFormat(const ordered_json &input, const ordered_json &options, const ordered_json &ctx) {
+ordered_json DateTools::dateFormat(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
     // input
     long long millis_since_epoch = 0;
     if (input.is_number_integer() || input.is_number_unsigned()) {
@@ -59,9 +60,10 @@ ordered_json DateTools::dateFormat(const ordered_json &input, const ordered_json
  * @param options Options dictating default value if conversion fails:
  *                  default: number (default: none) - the default milliseconds value to return if conversion fails.
  * @param ctx Context (not used in this function).
+ * @param metadata Metadata (not used in this function).
  * @return The milliseconds since epoch as a long long integer.
  */
-ordered_json DateTools::millis(const ordered_json &input, const ordered_json &options, const ordered_json &ctx) {
+ordered_json DateTools::millis(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
     if (input.is_number()) return input.get<long long>();
     try {
         return stoll(input.dump());

@@ -8,6 +8,7 @@
 using std::string;
 using std::string_view;
 using std::runtime_error;
+using json = nlohmann::json;
 using ordered_json = nlohmann::ordered_json;
 
 namespace jz {
@@ -47,11 +48,11 @@ namespace jz {
     struct Processor {
         // Public API: convert a jz template (jz_input) into string, using `data` as the input context.
         // Throws JZError on parse/eval/formatting errors.
-        static string to_string(string_view jz_input, const ordered_json &data);
+        static string to_string(string_view jz_input, const ordered_json &data, json &metadata);
 
         // Public API: convert a jz template (jz_input) into JSON, using `data` as the input context.
         // Throws JZError on parse/eval/formatting errors.
-        static ordered_json to_json(std::string_view jz_input, const ordered_json &data);
+        static ordered_json to_json(std::string_view jz_input, const ordered_json &data, json &metadata);
 
         // --- Utilities used internally (but kept public static for testability) ---
 
@@ -76,7 +77,7 @@ namespace jz {
         static std::string normalize_json5_to_json(std::string_view s);
 
         // Placeholder/template replacement:
-        static std::string replace_placeholders(std::string_view s, const ordered_json &data);
+        static std::string replace_placeholders(std::string_view s, const ordered_json &data, json &metadata);
 
         // Recursively remove 'undefined' sentinel nodes from JSON (both objects and arrays)
         static void remove_undefined_sentinels(ordered_json &j);

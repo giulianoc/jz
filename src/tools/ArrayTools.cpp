@@ -16,9 +16,10 @@ void ArrayTools::init() {
  * @param options Options dictating default value if input is not string/array:
  *                  default: number (default: none) - the default length value to return if input is not string/array/object.
  * @param ctx Context (not used in this function).
+ * @param metadata Metadata (not used in this function).
  * @return The length of the string, array or object, or nullptr/default if input is null or not a string/array/object.
  */
-ordered_json ArrayTools::length(const ordered_json &input, const ordered_json &options, const ordered_json &ctx) {
+ordered_json ArrayTools::length(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
     if (input.is_string())
         return input.get<string>().size();
     if (input.is_array() || input.is_object())

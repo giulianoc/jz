@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <nlohmann/json.hpp>
 
+using json = nlohmann::json;
 using ordered_json = nlohmann::ordered_json;
 
 namespace jz {
@@ -13,7 +14,7 @@ namespace jz {
     // - options: key->value options parsed from parentheses (values are evaluated expressions -> ordered_json)
     // - ctx: context object parsed from { ... } block (if provided) or empty object
     using ToolFunction = std::function<ordered_json(const ordered_json &input, const ordered_json &options,
-                                                    const ordered_json &ctx)>;
+                                                    const ordered_json &ctx, json &metadata)>;
 
     class ToolsManager {
     public:
@@ -25,16 +26,15 @@ namespace jz {
 
         template<typename ToolObject>
         void register_tool(const std::string &name, ToolObject tool) {
-            _registry[name] = [tool = std::move(tool)](const ordered_json &input,
-                                                       const ordered_json &options,
-                                                       const ordered_json &ctx) mutable {
-                return tool(input, options, ctx);
+            _registry[name] = [tool = std::move(tool)](const ordered_json &input, const ordered_json &options,
+                                                       const ordered_json &ctx, json &metadata) mutable {
+                return tool(input, options, ctx, metadata);
             };
         }
 
         // run a registered tool; throws if not found
         ordered_json run_tool(const std::string &name, const ordered_json &input, const ordered_json &options,
-                              const ordered_json &ctx);
+                              const ordered_json &ctx, json &metadata);
 
         // check exists
         bool has_tool(const std::string &name);

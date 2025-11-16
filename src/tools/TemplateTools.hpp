@@ -7,14 +7,15 @@ using namespace std;
 using ordered_json = nlohmann::ordered_json;
 
 namespace jz {
-    class IncludeTools {
+    class TemplateTools {
     public:
-        IncludeTools() = default;
+        TemplateTools() = default;
 
-        virtual ~IncludeTools() = default;
+        virtual ~TemplateTools() = default;
 
         static void init();
 
+        // include tool
         ordered_json operator()(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
                                 json &metadata) const;
 
@@ -25,5 +26,8 @@ namespace jz {
     private:
         static ordered_json merge(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
                                   json &metadata);
+
+        static ordered_json vars(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                                 json &metadata);
     };
 }

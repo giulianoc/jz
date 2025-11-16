@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <iostream>
 
-#include "tools/IncludeTools.hpp"
+#include "tools/TemplateTools.hpp"
 
 using namespace std;
 using namespace jz;
@@ -21,7 +21,7 @@ ToolsManager &ToolsManager::instance() {
         _toolsInitialized = true;
         ArrayTools::init();
         DateTools::init();
-        IncludeTools::init();
+        TemplateTools::init();
         StringTools::init();
     }
     return inst;

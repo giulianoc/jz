@@ -1088,10 +1088,18 @@ namespace jz {
                     if (cur.type != Token::T_HASH)
                         throw JZError("Expected '#' before tool name in pipeline", cur.line, cur.col);
                     match(Token::T_HASH);
-                    if (cur.type != Token::T_IDENTIFIER)
-                        throw JZError("Expected tool identifier after '#'", cur.line, cur.col);
-                    string toolname = cur.text;
-                    cur = lex.next();
+
+                    // Accept identifier or '{' (empty tool name with immediate context)
+                    std::string toolname;
+                    if (cur.type == Token::T_IDENTIFIER) {
+                        toolname = cur.text;
+                        cur = lex.next();
+                    } else if (cur.type == Token::T_LBRACE) {
+                        toolname = std::string(); // empty tool name
+                        // fall-through to context parsing below
+                    } else {
+                        throw JZError("Expected tool identifier or '{' after '#'", cur.line, cur.col);
+                    }
 
                     ordered_json options = ordered_json::object();
                     if (cur.type == Token::T_LPAREN) {
@@ -1115,11 +1123,12 @@ namespace jz {
                     }
 
                     ordered_json ctx = ordered_json::object();
+                    string raw_block;
                     if (cur.type == Token::T_LBRACE) {
                         try {
                             size_t block_start = lex.i;
                             size_t block_end = find_matching_brace_pos_in_source();
-                            auto raw_block = "{" + string(lex.s.substr(block_start, block_end - block_start)) + "}";
+                            raw_block = "{" + string(lex.s.substr(block_start, block_end - block_start)) + "}";
                             lex.i = block_end + 1;
                             for (char ch: raw_block) {
                                 if (ch == '\n') {
@@ -1130,10 +1139,20 @@ namespace jz {
                             if (block_end < lex.s.size() && lex.s[block_end] == '}') { ++lex.col; }
                             cur = lex.next();
                             if (toolname.starts_with("$")) {
-                                ordered_json _data(data);
-                                _data.merge_patch(left.j);
-                                ctx = Processor::to_json(raw_block, _data, metadata);
-                            } else {
+                                if (!left.j.is_array() && !left.j.is_null()) {
+                                    if (options.contains("$key")) {
+                                        ordered_json _data(data);
+                                        _data[options["$key"].get<string>()] = left.j;
+                                        ctx = Processor::to_json(raw_block, _data, metadata);
+                                    } else if (!left.j.empty()) {
+                                        ordered_json _data(data);
+                                        _data.merge_patch(left.j);
+                                        ctx = Processor::to_json(raw_block, _data, metadata);
+                                    } else {
+                                        ctx = Processor::to_json(raw_block, data, metadata);
+                                    }
+                                }
+                            } else if (!toolname.empty()) {
                                 ctx = Processor::to_json(raw_block, data, metadata);
                             }
                         } catch (exception &e) {
@@ -1152,7 +1171,29 @@ namespace jz {
                         ordered_json out_val;
                         try {
                             if (toolname == "$") {
-                                out_val = ctx;
+                                if (left.j.is_array()) {
+                                    const auto _key = options.contains("$key")
+                                                          ? options["$key"].get<string>()
+                                                          : string();
+                                    for (const auto &item: left.j) {
+                                        ordered_json _item(data);
+                                        if (!_key.empty())
+                                            _item[_key] = item;
+                                        else
+                                            _item.merge_patch(item);
+                                        out_val.push_back(Processor::to_json(raw_block, _item, metadata));
+                                    }
+                                } else {
+                                    out_val = ctx;
+                                }
+                            } else if (toolname.empty()) {
+                                if (left.j.is_array()) {
+                                    for (const auto &item: left.j) {
+                                        out_val.push_back(Processor::to_json(raw_block, item, metadata));
+                                    }
+                                } else {
+                                    out_val = Processor::to_json(raw_block, left.j, metadata);
+                                }
                             } else {
                                 const auto _toolname = toolname.starts_with("$") ? toolname.substr(1) : toolname;
                                 out_val = ToolsManager::instance().run_tool(_toolname, in_val, options, ctx, metadata);
@@ -1397,10 +1438,10 @@ namespace jz {
                 continue;
             }
 
-            if (c == '#' && sc.peek() == '{') {
-                auto [ln, col] = sc.position_prev();
-                throw JZError("Encountered '#{...}' directive which is not supported", ln, col);
-            }
+            // if (c == '#' && sc.peek() == '{') {
+            //     auto [ln, col] = sc.position_prev();
+            //     throw JZError("Encountered '#{...}' directive which is not supported", ln, col);
+            // }
 
             // handle $(expr) replacement
             if (c == '$' && sc.peek() == '(') {

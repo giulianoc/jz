@@ -1128,7 +1128,7 @@ namespace jz {
                         try {
                             size_t block_start = lex.i;
                             size_t block_end = find_matching_brace_pos_in_source();
-                            raw_block = "{" + string(lex.s.substr(block_start, block_end - block_start)) + "}";
+                            raw_block = string(lex.s.substr(block_start, block_end - block_start));
                             lex.i = block_end + 1;
                             for (char ch: raw_block) {
                                 if (ch == '\n') {
@@ -1138,6 +1138,16 @@ namespace jz {
                             }
                             if (block_end < lex.s.size() && lex.s[block_end] == '}') { ++lex.col; }
                             cur = lex.next();
+                            // ltrim and check for enclosing braces
+                            const auto it = ranges::find_if(raw_block, [](char c) {
+                                return !isspace<char>(c, locale::classic());
+                            });
+                            raw_block.erase(raw_block.begin(), it);
+                            if (raw_block.empty() || (raw_block[0] != '[' && raw_block[0] != '{')) {
+                                raw_block.insert(raw_block.begin(), '{');
+                                raw_block.push_back('}');
+                            }
+                            // parse context JSON from raw_block
                             if (toolname.starts_with("$")) {
                                 if (!left.j.is_array() && !left.j.is_null()) {
                                     if (options.contains("$key")) {
@@ -1158,9 +1168,6 @@ namespace jz {
                         } catch (exception &e) {
                             throw JZError(std::format("Tool '{}' error parsing context: [{}]", toolname, e.what()),
                                           cur.line, cur.col);
-                            // ctx = ordered_json::object();
-                            // ctx["__raw_block__"] = raw_block;
-                            // ctx["__error__"] = e.what();
                         }
                     }
 

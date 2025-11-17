@@ -1148,7 +1148,7 @@ namespace jz {
                                 raw_block.push_back('}');
                             }
                             // parse context JSON from raw_block
-                            if (toolname.starts_with("$")) {
+                            if (!toolname.empty() && toolname[0] == '$') {
                                 if (!left.j.is_array() && !left.j.is_null()) {
                                     if (options.contains("$key")) {
                                         ordered_json _data(data);
@@ -1202,8 +1202,8 @@ namespace jz {
                                     out_val = Processor::to_json(raw_block, left.j, metadata);
                                 }
                             } else {
-                                const auto _toolname = toolname.starts_with("$") ? toolname.substr(1) : toolname;
-                                out_val = ToolsManager::instance().run_tool(_toolname, in_val, options, ctx, metadata);
+                                out_val = ToolsManager::instance().run_tool(
+                                    toolname[0] == '$' ? toolname.substr(1) : toolname, in_val, options, ctx, metadata);
                             }
                         } catch (const std::exception &e) {
                             throw JZError(std::format("Tool '{}' failed: {}", toolname, e.what()), cur.line, cur.col);

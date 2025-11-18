@@ -1147,22 +1147,33 @@ namespace jz {
                                 raw_block.insert(raw_block.begin(), '{');
                                 raw_block.push_back('}');
                             }
+
                             // parse context JSON from raw_block
                             if (!toolname.empty() && toolname[0] == '$') {
-                                if (!left.j.is_array() && !left.j.is_null()) {
+                                // modifier '$' tools: merge input data into context
+                                if (!left.j.is_null()) {
+                                    // input data can be merged into a specific context key or at top level
                                     if (options.contains("$key")) {
                                         ordered_json _data(data);
                                         _data[options["$key"].get<string>()] = left.j;
+                                        // parse merged context JSON from raw_block
                                         ctx = Processor::to_json(raw_block, _data, metadata);
-                                    } else if (!left.j.empty()) {
-                                        ordered_json _data(data);
-                                        _data.merge_patch(left.j);
-                                        ctx = Processor::to_json(raw_block, _data, metadata);
-                                    } else {
-                                        ctx = Processor::to_json(raw_block, data, metadata);
+                                    } else if (!left.j.is_array()) {
+                                        // if input data are not an array and not empty, merge at top level
+                                        // (array can be merged only into a specific key)
+                                        if (!left.j.empty()) {
+                                            ordered_json _data(data);
+                                            _data.merge_patch(left.j);
+                                            // parse merged context JSON from raw_block
+                                            ctx = Processor::to_json(raw_block, _data, metadata);
+                                        } else {
+                                            // parse context JSON from raw_block
+                                            ctx = Processor::to_json(raw_block, data, metadata);
+                                        }
                                     }
                                 }
                             } else if (!toolname.empty()) {
+                                // parse merged context JSON from raw_block only if the tool is not anonymous
                                 ctx = Processor::to_json(raw_block, data, metadata);
                             }
                         } catch (exception &e) {
@@ -1178,12 +1189,27 @@ namespace jz {
                         ordered_json out_val;
                         try {
                             if (toolname == "$") {
-                                if (left.j.is_array()) {
+                                // anonymous tool: context was not processed beforehand; use context instruction to process input
+                                // the '$' modifier indicates that global context is available
+                                // '$vars' option tells to the anonymous tool that array input is to be treated as variables, not as items to process
+                                const auto _vars = options.contains("$vars")
+                                                       ? options["$vars"].get<bool>()
+                                                       : false;
+                                if (!_vars && left.j.is_array()) {
+                                    // put each array item into '$key' if given
                                     const auto _key = options.contains("$key")
                                                           ? options["$key"].get<string>()
                                                           : string();
-                                    for (const auto &item: left.j) {
+                                    // put current index into each item if '$index' option is given
+                                    const auto _idx = options.contains("$index")
+                                                          ? options["$index"].get<string>()
+                                                          : string();
+                                    // special '$' tool: process each array item separately
+                                    for (size_t idx = 0; idx < left.j.size(); ++idx) {
+                                        const auto &item = left.j[idx];
                                         ordered_json _item(data);
+                                        if (!_idx.empty())
+                                            _item[_idx] = idx;
                                         if (!_key.empty())
                                             _item[_key] = item;
                                         else
@@ -1194,9 +1220,27 @@ namespace jz {
                                     out_val = ctx;
                                 }
                             } else if (toolname.empty()) {
-                                if (left.j.is_array()) {
-                                    for (const auto &item: left.j) {
-                                        out_val.push_back(Processor::to_json(raw_block, item, metadata));
+                                // anonymous tool: context was not processed beforehand; use context instruction to process input
+                                // please note that global context is not available
+                                // 'vars' option tells to the anonymous tool that array input is to be treated as variables, not as items to process
+                                const auto _vars = options.contains("vars")
+                                                       ? options["vars"].get<bool>()
+                                                       : false;
+                                if (!_vars && left.j.is_array()) {
+                                    // put current index into each item if 'index' option is given
+                                    const auto _idx = options.contains("index")
+                                                          ? options["index"].get<string>()
+                                                          : string();
+                                    // process each array item separately
+                                    for (size_t idx = 0; idx < left.j.size(); ++idx) {
+                                        const auto &item = left.j[idx];
+                                        if (!_idx.empty()) {
+                                            ordered_json _item(data);
+                                            _item[_idx] = idx;
+                                            out_val.push_back(Processor::to_json(raw_block, _item, metadata));
+                                        } else {
+                                            out_val.push_back(Processor::to_json(raw_block, item, metadata));
+                                        }
                                     }
                                 } else {
                                     out_val = Processor::to_json(raw_block, left.j, metadata);

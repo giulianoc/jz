@@ -7,7 +7,6 @@ using namespace jz;
 void TemplateTools::init() {
     ToolsManager &tm = ToolsManager::instance();
     tm.register_tool("merge", merge);
-    tm.register_tool("vars", vars);
 }
 
 /**
@@ -38,33 +37,6 @@ ordered_json TemplateTools::merge(const ordered_json &input, const ordered_json 
         }
         return result;
     }*/
-}
-
-/**
- * Create a new context by adding the input as a variable or merged in the context.
- *
- * @param input The input JSON object.
- * @param options Options containing the "key" to use for the variable.
- * @param ctx The existing context object.
- * @param metadata Metadata (not used in this function).
- * @return The new context object with the input added as a variable (or merged, if options "key" is not present).
- */
-ordered_json TemplateTools::vars(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
-                                 json &metadata) {
-    if (!input.is_null()) {
-        if (options.contains("key")) {
-            ordered_json _ctx;
-            _ctx[options["key"].get<string>()] = input;
-            _ctx.merge_patch(ctx);
-            return _ctx;
-        }
-        if (!input.empty()) {
-            ordered_json _ctx(input);
-            _ctx.merge_patch(ctx);
-            return _ctx;
-        }
-    }
-    return ctx;
 }
 
 /**

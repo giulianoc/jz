@@ -26,8 +26,5 @@ namespace jz {
     private:
         static ordered_json merge(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
                                   json &metadata);
-
-        static ordered_json vars(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
-                                 json &metadata);
     };
 }

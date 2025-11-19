@@ -40,6 +40,13 @@ namespace jz {
         // check exists
         bool has_tool(const std::string &name);
 
+        template<typename T>
+        static T get_option(const ordered_json &options, const std::string &name, const T &defaultValue) {
+            if (options.is_object() && options.contains(name))
+                return options.at(name).get<T>();
+            return defaultValue;
+        }
+
     private:
         ToolsManager() = default;
 

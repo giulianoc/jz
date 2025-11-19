@@ -13,9 +13,10 @@ void StringTools::init() {
     tm.register_tool("upper", upper);
     tm.register_tool("lower", lower);
     tm.register_tool("capitalize", capitalize);
+    tm.register_tool("trim", trim);
 }
 
-// TODO: toString, trim, split, join, replace, substring, regexReplace, etc.
+// TODO: toString, split, join, replace, substring, regexReplace, etc.
 
 /**
  * Convert strings to uppercase.
@@ -70,13 +71,9 @@ ordered_json StringTools::lower(const ordered_json &input, const ordered_json &o
 ordered_json StringTools::capitalize(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
                                      json &metadata) {
     // cerr << "capitalize:" << input.dump() << endl;
-    bool firstOnly = false, forceLower = true;
-    if (options.is_object()) {
-        if (options.contains("firstOnly") && options["firstOnly"].is_boolean())
-            firstOnly = options["firstOnly"].get<bool>();
-        if (options.contains("forceLower") && options["forceLower"].is_boolean())
-            forceLower = options["forceLower"].get<bool>();
-    }
+    const bool firstOnly = ToolsManager::get_option(options, "firstOnly", false);
+    const bool forceLower = ToolsManager::get_option(options, "forceLower", true);
+
     auto operation = [firstOnly, forceLower](string s) {
         if (s.empty()) return s;
 
@@ -107,6 +104,38 @@ ordered_json StringTools::capitalize(const ordered_json &input, const ordered_js
 }
 
 /**
+ * Trim whitespace from the beginning and end of strings.
+ *
+ * @param input The input JSON structure.
+ * @param options Options dictating how to traverse and apply the operation:
+ *                  side: "both" (default), "left", "right" - which side(s) to trim
+ *                  (see traverse for other options)
+ * @param ctx Context (not used in this function).
+ * @param metadata Metadata (not used in this function).
+ * @return The transformed JSON structure with strings trimmed.
+ */
+ordered_json StringTools::trim(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                               json &metadata) {
+    const string side = ToolsManager::get_option(options, "side", string("both"));
+
+    auto operation = [side](string s) {
+        if (s.empty()) return s;
+
+        auto is_space = [](unsigned char c) { return std::isspace(c); };
+        if (side == "left" || side == "both") {
+            s.erase(s.begin(), ranges::find_if_not(s, is_space));
+        }
+
+        if (side == "right" || side == "both") {
+            s.erase(std::find_if_not(s.rbegin(), s.rend(), is_space).base(), s.end());
+        }
+
+        return s;
+    };
+    return _traverse(operation, input, options, ctx);
+}
+
+/**
  * Traverse the input JSON structure and apply the operation to strings according to options.
  *
  * @param operation The string operation to apply.
@@ -132,9 +161,7 @@ ordered_json StringTools::_traverse(const function<string(string)> &operation,
     }
 
     // Extract traverse mode (default: "both")
-    string traverse_mode = "both";
-    if (options.is_object() && options.contains("traverse") && options["traverse"].is_string())
-        traverse_mode = options["traverse"].get<string>();
+    const string traverse_mode = ToolsManager::get_option(options, "traverseMode", string("both"));
 
     // Handle arrays
     if ((traverse_mode == "array" || traverse_mode == "both") && input.is_array()) {
@@ -147,18 +174,16 @@ ordered_json StringTools::_traverse(const function<string(string)> &operation,
 
     // Handle objects
     if ((traverse_mode == "object" || traverse_mode == "both") && input.is_object()) {
-        string kv_mode = "both";
-        if (options.is_object() && options.contains("kv") && options["kv"].is_string())
-            kv_mode = options["kv"].get<string>();
-
+        const bool applyToKeys = ToolsManager::get_option(options, "applyToKeys", false);
+        const bool applyToValues = ToolsManager::get_option(options, "applyToValues", true);
         ordered_json object = ordered_json::object();
         for (const auto &[key, value]: input.items()) {
             string new_key = key;
-            if (kv_mode == "key" || kv_mode == "both") {
+            if (applyToKeys) {
                 new_key = operation(new_key);
             }
 
-            if (kv_mode == "value" || kv_mode == "both") {
+            if (applyToValues) {
                 object[new_key] = _traverse(operation, value, options, ctx);
             } else {
                 object[new_key] = value;
@@ -167,11 +192,7 @@ ordered_json StringTools::_traverse(const function<string(string)> &operation,
         return object;
     }
 
-    bool toString = false;
-    if (options.is_object() && options.contains("toString"))
-        toString = options.at("toString").get<bool>();
-
-    if (toString) {
+    if (ToolsManager::get_option(options, "convertAllToString", false)) {
         // dump to string and transform it
         return operation(input.dump());
     }

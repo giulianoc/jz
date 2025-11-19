@@ -25,9 +25,7 @@ ordered_json CollectionTools::length(const ordered_json &input, const ordered_js
         return input.get<string>().size();
     if (input.is_array() || input.is_object())
         return input.size();
-    if (options.is_object()) {
-        if (options.contains("default") && options["default"].is_number())
-            return options["default"].get<long long>();
-    }
+    if (options.is_object() && options.contains("default") && options["default"].is_number())
+        return options["default"].get<long long>();
     return nullptr;
 }

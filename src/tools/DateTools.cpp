@@ -40,14 +40,9 @@ ordered_json DateTools::dateFormat(const ordered_json &input, const ordered_json
     }
 
     // options
-    string fmt = "%Y-%m-%dT%H:%M:%SZ"; // default format
-    string precision = "seconds";
-    if (options.is_object()) {
-        if (options.contains("format") && options["format"].is_string())
-            fmt = options["format"].get<string>();
-        if (options.contains("precision") && options["precision"].is_string())
-            precision = options["precision"].get<string>();
-    }
+    const string fmt = ToolsManager::get_option(options, "fmt", string("%Y-%m-%dT%H:%M:%SZ"));
+    const string precision = ToolsManager::get_option(options, "precision", string("seconds"));
+
     const string &f = std::format("{{:{}}}", fmt);
 
     // Build time_point from milliseconds

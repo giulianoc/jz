@@ -18,19 +18,20 @@ namespace jz {
 
     class ToolsManager {
     public:
+        class ToolObject {
+        public:
+            virtual ~ToolObject() = default;
+
+            virtual ordered_json operator()(const ordered_json &input, const ordered_json &options,
+                                            const ordered_json &ctx,
+                                            json &metadata) const = 0;
+        };
+
         static ToolsManager &instance();
 
-
-        // register a tool by name (lowercase)
         void register_tool(const std::string &name, ToolFunction fn);
 
-        template<typename ToolObject>
-        void register_tool(const std::string &name, ToolObject tool) {
-            _registry[name] = [tool = std::move(tool)](const ordered_json &input, const ordered_json &options,
-                                                       const ordered_json &ctx, json &metadata) mutable {
-                return tool(input, options, ctx, metadata);
-            };
-        }
+        void register_tool(const std::string &name, const std::shared_ptr<ToolObject> &tool);
 
         // run a registered tool; throws if not found
         ordered_json run_tool(const std::string &name, const ordered_json &input, const ordered_json &options,
@@ -43,8 +44,6 @@ namespace jz {
         ToolsManager() = default;
 
         ~ToolsManager() = default;
-
-        static std::string normalize_tool_name(const std::string &s);
 
         std::unordered_map<std::string, ToolFunction> _registry;
         std::shared_mutex _registryMutex;

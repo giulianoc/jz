@@ -1,10 +1,10 @@
-#include "ArrayTools.hpp"
+#include "CollectionTools.hpp"
 #include "../ToolsManager.hpp"
 
 using namespace std;
 using namespace jz;
 
-void ArrayTools::init() {
+void CollectionTools::init() {
     ToolsManager &tm = ToolsManager::instance();
     tm.register_tool("length", length);
 }
@@ -19,7 +19,8 @@ void ArrayTools::init() {
  * @param metadata Metadata (not used in this function).
  * @return The length of the string, array or object, or nullptr/default if input is null or not a string/array/object.
  */
-ordered_json ArrayTools::length(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
+ordered_json CollectionTools::length(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                                     json &metadata) {
     if (input.is_string())
         return input.get<string>().size();
     if (input.is_array() || input.is_object())

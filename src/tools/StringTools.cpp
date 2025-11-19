@@ -15,6 +15,8 @@ void StringTools::init() {
     tm.register_tool("capitalize", capitalize);
 }
 
+// TODO: toString, trim, split, join, replace, substring, regexReplace, etc.
+
 /**
  * Convert strings to uppercase.
  *
@@ -24,7 +26,8 @@ void StringTools::init() {
  * @param metadata Metadata (not used in this function).
  * @return The transformed JSON structure with strings converted to uppercase.
  */
-ordered_json StringTools::upper(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
+ordered_json StringTools::upper(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                                json &metadata) {
     // cerr << "upper:" << input.dump() << endl;
     auto operation = [](string s) {
         ranges::transform(s, s.begin(), [](const unsigned char c) { return toupper(c); });
@@ -42,7 +45,8 @@ ordered_json StringTools::upper(const ordered_json &input, const ordered_json &o
  * @param metadata Metadata (not used in this function).
  * @return The transformed JSON structure with strings converted to lowercase.
  */
-ordered_json StringTools::lower(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
+ordered_json StringTools::lower(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                                json &metadata) {
     // cerr << "lower:" << input.dump() << endl;
     auto operation = [](string s) {
         ranges::transform(s, s.begin(), [](const unsigned char c) { return tolower(c); });
@@ -63,7 +67,8 @@ ordered_json StringTools::lower(const ordered_json &input, const ordered_json &o
  * @param metadata Metadata (not used in this function).
  * @return The transformed JSON structure with strings capitalized.
  */
-ordered_json StringTools::capitalize(const ordered_json &input, const ordered_json &options, const ordered_json &ctx, json &metadata) {
+ordered_json StringTools::capitalize(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                                     json &metadata) {
     // cerr << "capitalize:" << input.dump() << endl;
     bool firstOnly = false, forceLower = true;
     if (options.is_object()) {
@@ -107,16 +112,16 @@ ordered_json StringTools::capitalize(const ordered_json &input, const ordered_js
  * @param operation The string operation to apply.
  * @param input The input JSON structure.
  * @param options Options dictating how to traverse and apply the operation:
- *                  traverse: "dump" (default, just dump the input to string), "array", "object", "both"
+ *                  traverse: "none" (just dump the input to string), "array", "object", "both" (default: "both")
  *                  kv: "both" (default), "key", "value" (only for object traversal)
- *                  convert: bool (default: false) - whether to convert non-string values to string before applying operation
+ *                  toString: bool (default: false) - whether to convert non-string values to string before applying operation
  * @param ctx Context (not used in this function).
  * @return The transformed JSON structure.
  */
 ordered_json StringTools::_traverse(const function<string(string)> &operation,
-                                   const ordered_json &input,
-                                   const ordered_json &options,
-                                   const ordered_json &ctx) {
+                                    const ordered_json &input,
+                                    const ordered_json &options,
+                                    const ordered_json &ctx) {
     // Handle null input
     if (input.is_null())
         return nullptr;
@@ -126,8 +131,8 @@ ordered_json StringTools::_traverse(const function<string(string)> &operation,
         return operation(input.get<string>());
     }
 
-    // Extract traverse mode (default: "dump")
-    string traverse_mode = "dump";
+    // Extract traverse mode (default: "both")
+    string traverse_mode = "both";
     if (options.is_object() && options.contains("traverse") && options["traverse"].is_string())
         traverse_mode = options["traverse"].get<string>();
 
@@ -162,11 +167,11 @@ ordered_json StringTools::_traverse(const function<string(string)> &operation,
         return object;
     }
 
-    bool convert = false;
-    if (options.is_object() && options.contains("convert"))
-        convert = options.at("convert").get<bool>();
+    bool toString = false;
+    if (options.is_object() && options.contains("toString"))
+        toString = options.at("toString").get<bool>();
 
-    if (convert) {
+    if (toString) {
         // dump to string and transform it
         return operation(input.dump());
     }

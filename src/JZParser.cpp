@@ -1094,13 +1094,14 @@ namespace jz {
                     if (cur.type == Token::T_IDENTIFIER) {
                         toolname = cur.text;
                         cur = lex.next();
-                    } else if (cur.type == Token::T_LBRACE) {
+                    } else if (cur.type == Token::T_LBRACE || cur.type == Token::T_LPAREN) {
                         toolname = std::string(); // empty tool name
                         // fall-through to context parsing below
                     } else {
                         throw JZError("Expected tool identifier or '{' after '#'", cur.line, cur.col);
                     }
 
+                    // Parse options
                     ordered_json options = ordered_json::object();
                     if (cur.type == Token::T_LPAREN) {
                         match(Token::T_LPAREN);
@@ -1191,11 +1192,11 @@ namespace jz {
                             if (toolname == "$") {
                                 // anonymous tool: context was not processed beforehand; use context instruction to process input
                                 // the '$' modifier indicates that global context is available
-                                // '$vars' option tells to the anonymous tool that array input is to be treated as variables, not as items to process
-                                const auto _vars = options.contains("$vars")
-                                                       ? options["$vars"].get<bool>()
-                                                       : false;
-                                if (!_vars && left.j.is_array()) {
+                                // '$loop' option tells to the anonymous tool if array input must be processed as items (default) or as a whole
+                                const auto _loop = options.contains("$loop")
+                                                       ? options["$loop"].get<bool>()
+                                                       : true;
+                                if (_loop && left.j.is_array()) {
                                     // put each array item into '$key' if given
                                     const auto _key = options.contains("$key")
                                                           ? options["$key"].get<string>()
@@ -1214,19 +1215,26 @@ namespace jz {
                                             _item[_key] = item;
                                         else
                                             _item.merge_patch(item);
-                                        out_val.push_back(Processor::to_json(raw_block, _item, metadata));
+                                        const auto val = Processor::to_json(raw_block, _item, metadata);
+                                        // cout << "====>>> " << val << endl;
+                                        out_val.push_back(val);
                                     }
+                                    // cout << "++++>>> " << out_val << endl;
                                 } else {
                                     out_val = ctx;
                                 }
                             } else if (toolname.empty()) {
                                 // anonymous tool: context was not processed beforehand; use context instruction to process input
                                 // please note that global context is not available
-                                // 'vars' option tells to the anonymous tool that array input is to be treated as variables, not as items to process
-                                const auto _vars = options.contains("vars")
-                                                       ? options["vars"].get<bool>()
-                                                       : false;
-                                if (!_vars && left.j.is_array()) {
+                                // 'loop' option tells to the anonymous tool if array input must be processed as items (default) or as a whole
+                                const auto _loop = options.contains("loop")
+                                                       ? options["loop"].get<bool>()
+                                                       : true;
+                                if (_loop && left.j.is_array()) {
+                                    // put each array item into '$key' if given
+                                    const auto _key = options.contains("key")
+                                                          ? options["key"].get<string>()
+                                                          : string();
                                     // put current index into each item if 'index' option is given
                                     const auto _idx = options.contains("index")
                                                           ? options["index"].get<string>()
@@ -1234,13 +1242,17 @@ namespace jz {
                                     // process each array item separately
                                     for (size_t idx = 0; idx < left.j.size(); ++idx) {
                                         const auto &item = left.j[idx];
-                                        if (!_idx.empty()) {
-                                            ordered_json _item(data);
-                                            _item[_idx] = idx;
+                                        if (!_idx.empty() || !_key.empty()) {
+                                            ordered_json _item;
+                                            if (!_idx.empty())
+                                                _item[_idx] = idx;
+                                            if (!_key.empty())
+                                                _item[_key] = item;
+                                            else
+                                                _item.merge_patch(item);
                                             out_val.push_back(Processor::to_json(raw_block, _item, metadata));
-                                        } else {
+                                        } else
                                             out_val.push_back(Processor::to_json(raw_block, item, metadata));
-                                        }
                                     }
                                 } else {
                                     out_val = Processor::to_json(raw_block, left.j, metadata);

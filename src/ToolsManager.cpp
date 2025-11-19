@@ -1,5 +1,5 @@
 #include "ToolsManager.hpp"
-#include "tools/ArrayTools.hpp"
+#include "tools/CollectionTools.hpp"
 #include "tools/DateTools.hpp"
 #include "tools/StringTools.hpp"
 #include <algorithm>
@@ -19,7 +19,7 @@ ToolsManager &ToolsManager::instance() {
     static bool _toolsInitialized = false;
     if (!_toolsInitialized) {
         _toolsInitialized = true;
-        ArrayTools::init();
+        CollectionTools::init();
         DateTools::init();
         TemplateTools::init();
         StringTools::init();
@@ -28,16 +28,22 @@ ToolsManager &ToolsManager::instance() {
 }
 
 void ToolsManager::register_tool(const std::string &name, ToolFunction fn) {
-    const string key = normalize_tool_name(name);
     unique_lock locker(_registryMutex);
-    _registry[key] = std::move(fn);
+    _registry[name] = std::move(fn);
+}
+
+void ToolsManager::register_tool(const std::string &name, const std::shared_ptr<ToolObject> &tool) {
+    std::unique_lock locker(_registryMutex);
+    _registry[name] = [tool](const ordered_json &input, const ordered_json &options,
+                             const ordered_json &ctx, json &metadata) mutable {
+        return (*tool)(input, options, ctx, metadata);
+    };
 }
 
 ordered_json ToolsManager::run_tool(const std::string &name, const ordered_json &input, const ordered_json &options,
                                     const ordered_json &ctx, json &metadata) {
-    const string key = normalize_tool_name(name);
     shared_lock locker(_registryMutex);
-    const auto it = _registry.find(key);
+    const auto it = _registry.find(name);
     if (it == _registry.end()) {
         throw std::runtime_error("Unknown tool: " + name);
     }
@@ -45,15 +51,7 @@ ordered_json ToolsManager::run_tool(const std::string &name, const ordered_json 
 }
 
 bool ToolsManager::has_tool(const std::string &name) {
-    const string key = normalize_tool_name(name);
     shared_lock locker(_registryMutex);
-    return _registry.contains(key);
+    return _registry.contains(name);
 }
-
-string ToolsManager::normalize_tool_name(const string &s) {
-    string out = s;
-    ranges::transform(out.begin(), out.end(), out.begin(), ::tolower);
-    return out;
-}
-
 

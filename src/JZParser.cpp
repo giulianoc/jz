@@ -630,7 +630,7 @@ namespace jz {
         struct Token {
             enum Type {
                 T_EOF, T_IDENTIFIER, T_NUMBER, T_STRING, T_TRUE, T_FALSE, T_NULL, T_UNDEFINED,
-                T_QMARK, T_COLON, T_DOT, T_LPAREN, T_RPAREN, T_LBRACKET, T_RBRACKET, T_LBRACE, T_RBRACE,
+                T_QMARK, T_COLON, T_DOT, T_LPAREN, T_RPAREN, T_LBRACKET, T_RBRACKET, T_LBRACE, T_RBRACE, T_TEMPLATE,
                 T_COMMA, T_PIPE, T_HASH, T_OR, T_AND, T_NOT, T_NULLISH, T_EQ, T_NE, T_GT, T_LT, T_GTE, T_LTE, T_ASSIGN
             };
 
@@ -646,7 +646,7 @@ namespace jz {
             size_t line = 1;
             size_t col = 1;
 
-            explicit Lexer(string_view src) : s(src) {
+            explicit Lexer(const string_view src) : s(src) {
             }
 
             static bool is_id_start(char c) { return isalpha(static_cast<unsigned char>(c)) || c == '_' || c == '$'; }
@@ -731,6 +731,35 @@ namespace jz {
                     i += 2;
                     col += 2;
                     return Token{Token::T_LTE, "<=", l, co};
+                }
+                if (c == '`') {
+                    const size_t start_line = line;
+                    const size_t start_col = col;
+                    ++i;
+                    ++col; // consume backtick
+                    std::string acc;
+                    bool esc = false;
+                    while (i < s.size()) {
+                        const char ch = s[i++];
+                        if (ch == '\n') {
+                            ++line;
+                            col = 1;
+                        } else ++col;
+                        if (esc) {
+                            acc.push_back(ch);
+                            esc = false;
+                            continue;
+                        }
+                        if (ch == '\\') {
+                            esc = true;
+                            continue;
+                        }
+                        if (ch == '`') {
+                            return Token{Token::T_TEMPLATE, std::move(acc), start_line, start_col};
+                        }
+                        acc.push_back(ch);
+                    }
+                    throw JZError("Unterminated template string", start_line, start_col);
                 }
 
                 // single char tokens
@@ -1272,6 +1301,105 @@ namespace jz {
                 return left;
             }
 
+            Value parse_object() {
+                consume(Token::T_LBRACE, "{");
+                ordered_json obj = ordered_json::object();
+                while (cur.type != Token::T_RBRACE) {
+                    if (cur.type == Token::T_EOF) throw JZError("Unterminated object literal", cur.line, cur.col);
+                    std::string key;
+                    if (cur.type == Token::T_STRING) {
+                        key = cur.text;
+                        cur = lex.next();
+                    } else if (cur.type == Token::T_IDENTIFIER) {
+                        key = cur.text;
+                        cur = lex.next();
+                    } else {
+                        throw JZError("Expected object key", cur.line, cur.col);
+                    }
+                    consume(Token::T_COLON, ":");
+                    Value v = parse_expr();
+                    obj[key] = v.j;
+                    if (cur.type == Token::T_COMMA) {
+                        match(Token::T_COMMA);
+                        // allow trailing comma; continue or break if next is '}'
+                        if (cur.type == Token::T_RBRACE) break;
+                    }
+                }
+                consume(Token::T_RBRACE, "}");
+                return Value::from_json(std::move(obj));
+            }
+
+            Value parse_array() {
+                consume(Token::T_LBRACKET, "[");
+                ordered_json arr = ordered_json::array();
+                while (cur.type != Token::T_RBRACKET) {
+                    if (cur.type == Token::T_EOF) throw JZError("Unterminated array literal", cur.line, cur.col);
+                    Value v = parse_expr();
+                    arr.push_back(v.j);
+                    if (cur.type == Token::T_COMMA) {
+                        match(Token::T_COMMA);
+                        if (cur.type == Token::T_RBRACKET) break;
+                    }
+                }
+                consume(Token::T_RBRACKET, "]");
+                return Value::from_json(std::move(arr));
+            }
+
+            [[nodiscard]] Value interpolate_template(const std::string &raw) const {
+                return Value::from_json(interpolate_template(raw, data, metadata));
+            }
+
+            static ordered_json interpolate_template(const std::string &raw, const ordered_json &data,
+                                                     json &metadata) {
+                std::string out;
+                for (size_t i = 0; i < raw.size(); ++i) {
+                    if (raw[i] == '$' && i + 1 < raw.size() && raw[i + 1] == '(') {
+                        const size_t start = i + 2;
+                        int depth = 1;
+                        bool in_str = false;
+                        char delim = 0;
+                        bool esc = false;
+                        size_t j = start;
+                        while (j < raw.size()) {
+                            const char ch = raw[j++];
+                            if (in_str) {
+                                if (esc) {
+                                    esc = false;
+                                } else if (ch == '\\') {
+                                    esc = true;
+                                } else if (ch == delim) {
+                                    in_str = false;
+                                    delim = 0;
+                                }
+                                continue;
+                            }
+                            if (ch == '"' || ch == '\'') {
+                                in_str = true;
+                                delim = ch;
+                                continue;
+                            }
+                            if (ch == '(') {
+                                ++depth;
+                                continue;
+                            }
+                            if (ch == ')') { if (--depth == 0) break; }
+                        }
+                        if (depth != 0) throw JZError("Unterminated $(...) in template literal", 0, 0);
+                        std::string expr = raw.substr(start, j - start - 1);
+                        bool missing = false;
+                        ordered_json val = evaluate_expression(expr, data, metadata, missing);
+                        if (!missing && !is_undefined_sentinel(val)) {
+                            if (val.is_string()) out += val.get_ref<const std::string &>();
+                            else out += val.dump();
+                        }
+                        i = j - 1; // advance
+                    } else {
+                        out.push_back(raw[i]);
+                    }
+                }
+                return out;
+            }
+
             Value parse_primary() {
                 switch (cur.type) {
                     case Token::T_DOT: {
@@ -1340,6 +1468,15 @@ namespace jz {
                         }
                         return resolve_path(parts);
                     }
+                    case Token::T_LBRACE:
+                        return parse_object();
+                    case Token::T_LBRACKET:
+                        return parse_array();
+                    case Token::T_TEMPLATE: {
+                        const std::string raw = cur.text;
+                        cur = lex.next();
+                        return interpolate_template(raw);
+                    }
                     default:
                         throw JZError("Unexpected token in expression", cur.line, cur.col);
                 }
@@ -1381,10 +1518,6 @@ namespace jz {
        - throws JZError with positions when unterminated templates/expressions found
        ------------------------- */
 
-    static string to_json_string_literal(const string &text) {
-        return ordered_json(text).dump();
-    }
-
     // helper to append value for template (if string => raw text, else JSON dump)
     static void append_value_for_template(string &acc, const ordered_json &val) {
         if (val.is_null()) return;
@@ -1423,7 +1556,7 @@ namespace jz {
                         continue;
                     }
                     if (ch == '`') break;
-                    if (ch == '$' && sc.peek() == '(') {
+                    /*if (ch == '$' && sc.peek() == '(') {
                         sc.advance(); // skip '('
                         // find matching ')' with nested parentheses and string awareness
                         int depth = 1;
@@ -1470,14 +1603,15 @@ namespace jz {
                             append_value_for_template(
                                 acc, val);
                         continue;
-                    }
+                    }*/
                     acc.push_back(ch);
                 }
                 if (sc.eof()) {
                     throw JZError("Unterminated template string (`...`)", start_pos.first, start_pos.second);
                 }
                 // produce JSON string literal from acc
-                out += ordered_json(acc).dump();
+                out += eval::Parser::interpolate_template(acc, data, metadata).dump();
+                // out += ordered_json(acc).dump();
                 continue;
             }
 
@@ -1531,9 +1665,7 @@ namespace jz {
                         if (ch == str_delim) {
                             str_in = false;
                             str_delim = 0;
-                            continue;
                         }
-                        continue;
                     } else {
                         if (ch == '"' || ch == '\'') {
                             str_in = true;
@@ -1546,7 +1678,7 @@ namespace jz {
                 }
                 if (sc.eof()) throw JZError("Unterminated $(...) placeholder", expr_start_line, expr_start_col);
                 size_t expr_end_idx = sc.pos() - 1;
-                string expr = string(sc.s.substr(expr_start_idx, expr_end_idx - expr_start_idx));
+                auto expr = string(sc.s.substr(expr_start_idx, expr_end_idx - expr_start_idx));
                 bool missing = false;
                 ordered_json val = eval::Parser::evaluate_expression(expr, data, metadata, missing);
                 if (missing) out += undefined_sentinel().dump();

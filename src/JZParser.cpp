@@ -1306,22 +1306,46 @@ namespace jz {
                 ordered_json obj = ordered_json::object();
                 while (cur.type != Token::T_RBRACE) {
                     if (cur.type == Token::T_EOF) throw JZError("Unterminated object literal", cur.line, cur.col);
+
                     std::string key;
-                    if (cur.type == Token::T_STRING) {
+
+                    // Handle dynamic key: $(...) or $(identifier)
+                    if (cur.type == Token::T_IDENTIFIER && cur.text == "$") {
+                        Token nextTok = lex.next();
+                        if (nextTok.type == Token::T_LPAREN) {
+                            // Parse $(expr) as key
+                            cur = lex.next(); // first token after '('
+                            Value keyVal = parse_expr();
+                            consume(Token::T_RPAREN, "')'");
+                            // Convert key value to string
+                            if (keyVal.j.is_string()) {
+                                key = keyVal.j.get<string>();
+                            } else if (!is_undefined(keyVal)) {
+                                key = keyVal.j.dump();
+                            } else {
+                                throw JZError("Object key expression evaluated to undefined", cur.line, cur.col);
+                            }
+                        } else {
+                            throw JZError("Expected '(' after '$' in object key", cur.line, cur.col);
+                        }
+                    }
+                    // Static keys: string or identifier
+                    else if (cur.type == Token::T_STRING) {
                         key = cur.text;
                         cur = lex.next();
                     } else if (cur.type == Token::T_IDENTIFIER) {
                         key = cur.text;
                         cur = lex.next();
                     } else {
-                        throw JZError("Expected object key", cur.line, cur.col);
+                        throw JZError("Expected object key (identifier, string, or $(...))", cur.line, cur.col);
                     }
+
                     consume(Token::T_COLON, ":");
                     Value v = parse_expr();
                     obj[key] = v.j;
+
                     if (cur.type == Token::T_COMMA) {
                         match(Token::T_COMMA);
-                        // allow trailing comma; continue or break if next is '}'
                         if (cur.type == Token::T_RBRACE) break;
                     }
                 }
@@ -1443,6 +1467,45 @@ namespace jz {
                         return Value::from_json(undefined_sentinel());
                     }
                     case Token::T_IDENTIFIER: {
+                        // Special case: '$(' ... ')' inside expressions should behave like a single $(...) expression
+                        if (cur.text == "$") {
+                            // Peek next token without losing it
+                            Token dollarTok = cur;
+                            Token nextTok = lex.next(); // advance to next
+                            if (nextTok.type == Token::T_LPAREN) {
+                                // Consume '(' and parse inner expression, discarding the standalone '$' identifier
+                                cur = lex.next(); // first token after '('
+                                Value inner = parse_expr();
+                                consume(Token::T_RPAREN, "')'");
+                                return inner;
+                            }
+                            // Not a '$(' pattern: treat '$' as normal identifier path start
+                            cur = nextTok; // continue with path parsing using '$' as first part
+                            vector<string> parts;
+                            parts.push_back(dollarTok.text);
+                            while (cur.type == Token::T_DOT || cur.type == Token::T_LBRACKET) {
+                                if (cur.type == Token::T_DOT) {
+                                    match(Token::T_DOT);
+                                    if (cur.type != Token::T_IDENTIFIER)
+                                        throw JZError("Expected identifier after '.'", cur.line, cur.col);
+                                    parts.push_back(cur.text);
+                                    cur = lex.next();
+                                } else {
+                                    // bracket
+                                    match(Token::T_LBRACKET);
+                                    if (cur.type == Token::T_NUMBER || cur.type == Token::T_STRING || cur.type ==
+                                        Token::T_IDENTIFIER) {
+                                        parts.push_back(cur.text);
+                                        cur = lex.next();
+                                    } else {
+                                        throw JZError("Expected index or key inside []", cur.line, cur.col);
+                                    }
+                                    consume(Token::T_RBRACKET, "]");
+                                }
+                            }
+                            return resolve_path(parts);
+                        }
+
                         vector<string> parts;
                         parts.push_back(cur.text);
                         cur = lex.next();

@@ -971,7 +971,6 @@ namespace jz {
                         if (c == delim) {
                             in_str = false;
                             delim = 0;
-                            continue;
                         }
                     } else {
                         if (c == '"' || c == '\'') {
@@ -1168,15 +1167,15 @@ namespace jz {
                             }
                             if (block_end < lex.s.size() && lex.s[block_end] == '}') { ++lex.col; }
                             cur = lex.next();
-                            // ltrim and check for enclosing braces
-                            const auto it = ranges::find_if(raw_block, [](char c) {
-                                return !isspace<char>(c, locale::classic());
-                            });
-                            raw_block.erase(raw_block.begin(), it);
-                            if (raw_block.empty() || (raw_block[0] != '[' && raw_block[0] != '{')) {
-                                raw_block.insert(raw_block.begin(), '{');
-                                raw_block.push_back('}');
-                            }
+                            // // ltrim and check for enclosing braces
+                            // const auto it = ranges::find_if(raw_block, [](char c) {
+                            //     return !isspace<char>(c, locale::classic());
+                            // });
+                            // raw_block.erase(raw_block.begin(), it);
+                            // if (raw_block.empty() || (raw_block[0] != '[' && raw_block[0] != '{')) {
+                            //     raw_block.insert(raw_block.begin(), '{');
+                            //     raw_block.push_back('}');
+                            // }
 
                             // parse context JSON from raw_block
                             if (!toolname.empty() && toolname[0] == '$') {
@@ -1244,8 +1243,8 @@ namespace jz {
                                             _item[_key] = item;
                                         else
                                             _item.merge_patch(item);
+                                        // cout << "====>>> " << raw_block << endl;
                                         const auto val = Processor::to_json(raw_block, _item, metadata);
-                                        // cout << "====>>> " << val << endl;
                                         out_val.push_back(val);
                                     }
                                     // cout << "++++>>> " << out_val << endl;

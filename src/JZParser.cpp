@@ -16,27 +16,6 @@ using ordered_json = nlohmann::ordered_json;
 
 namespace jz {
     /* -------------------------
-       JZError implementation
-       ------------------------- */
-    JZError::JZError(const string_view msg, const size_t line_, const size_t col_)
-        : runtime_error(std::format("{} (line {}, column {})", std::string(msg), line_, col_)),
-          _line(line_ > 0 ? line_ : 0), _column(col_ > 0 ? col_ : 0) {
-        // full_msg = std::format("{} (line {}, column {})\n{}", std::string(msg), line, column);
-    }
-
-    JZError::JZError(const string &msg, const string &json)
-        : runtime_error(msg), _line(0), _column(0), _json(json) {
-    }
-
-    // JZError::JZError(const std::string &msg, size_t line_, size_t col_)
-    //     : JZError(string_view(msg), line_, col_) {
-    // }
-
-    // const char *JZError::what() const noexcept {
-    //     return full_msg.c_str();
-    // }
-    //
-    /* -------------------------
        Internal helpers
        ------------------------- */
 
@@ -1205,7 +1184,9 @@ namespace jz {
                                 // parse merged context JSON from raw_block only if the tool is not anonymous
                                 ctx = Processor::to_json(raw_block, data, metadata);
                             }
-                        } catch (exception &e) {
+                        } catch (const JZError &e) {
+                            throw JZError(toolname, e, cur.line);
+                        } catch (const exception &e) {
                             throw JZError(std::format("Tool '{}' error parsing context: [{}]", toolname, e.what()),
                                           cur.line, cur.col);
                         }
@@ -1289,6 +1270,8 @@ namespace jz {
                                 out_val = ToolsManager::instance().run_tool(
                                     toolname[0] == '$' ? toolname.substr(1) : toolname, in_val, options, ctx, metadata);
                             }
+                        } catch (const JZError &e) {
+                            throw JZError(toolname, e, cur.line);
                         } catch (const std::exception &e) {
                             throw JZError(std::format("Tool '{}' failed: {}", toolname, e.what()), cur.line, cur.col);
                         }

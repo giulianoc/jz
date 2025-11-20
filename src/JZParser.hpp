@@ -19,9 +19,21 @@ namespace jz {
     */
     struct JZError final : public runtime_error {
     public:
-        explicit JZError(string_view msg, size_t line_ = 1, size_t col_ = 1);
+        explicit JZError(const string &msg, const size_t line_ = 1, const size_t col_ = 1)
+            : runtime_error(msg),
+              _line(line_ > 0 ? line_ : 0), _column(col_ > 0 ? col_ : 0) {
+        }
 
-        explicit JZError(const string &msg, const string &json);
+        explicit JZError(const string &msg, const string &json)
+            : runtime_error(msg), _line(0), _column(0), _json(json) {
+        }
+
+        explicit JZError(const string &toolname, const JZError &e, const size_t line_)
+            : runtime_error(
+                  std::format("{} tool, error parsing context: [{}]",
+                              toolname.empty() || toolname == "$" ? "anonymous" : toolname, e.what())),
+              _line(e.line() + line_ > 0 ? e.line() + line_ : 0), _column(e.column() > 0 ? e.column() : 0) {
+        }
 
         // JZError(const std::string &msg, size_t line_ = 1, size_t col_ = 1);
 

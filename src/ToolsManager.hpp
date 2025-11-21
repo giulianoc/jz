@@ -47,10 +47,10 @@ namespace jz {
             return defaultValue;
         }
     	template<typename T>
-		static optional<T> get_option(const ordered_json &options, const std::string &name) {
+		static std::optional<T> get_option(const ordered_json &options, const std::string &name) {
         	if (options.is_object() && options.contains(name))
         		return options.at(name).get<T>();
-        	return nullopt;
+        	return std::nullopt;
         }
 
     private:

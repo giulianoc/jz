@@ -23,6 +23,9 @@ namespace jz {
         static ordered_json trim(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
                                  json &metadata);
 
+        static ordered_json dirname(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                                    json &metadata);
+
         static ordered_json _traverse(const std::function<std::string(std::string s)> &operation,
                                       const ordered_json &input,
                                       const ordered_json &options, const ordered_json &ctx);

@@ -136,6 +136,40 @@ ordered_json StringTools::trim(const ordered_json &input, const ordered_json &op
 }
 
 /**
+ * Get the directory name from file paths in strings.
+ *
+ * @param input The input JSON structure.
+ * @param options Options dictating how to traverse and apply the operation:
+ *                  separator: char (default: '/') - the path separator
+ *                  onlyIfFilenameContains: string (optional) - only apply dirname if the filename contains this substring
+ *                  (see traverse for other options)
+ * @param ctx Context (not used in this function).
+ * @param metadata Metadata (not used in this function).
+ * @return The transformed JSON structure with directory names.
+ */
+ordered_json StringTools::dirname(const ordered_json &input, const ordered_json &options, const ordered_json &ctx,
+                                  json &metadata) {
+    const char separator = ToolsManager::get_option(options, "separator", '/');
+    const optional<string> filenameContains = ToolsManager::get_option<string>(options, "onlyIfFilenameContains");
+
+    auto operation = [separator, filenameContains](const string &path) {
+        if (path.empty()) return std::format("{}", separator);
+        const auto pos = path.rfind(separator);
+        const std::string last_segment =
+                (pos == std::string::npos ? path : path.substr(pos + 1));
+        if (filenameContains) {
+            if (last_segment.find(filenameContains.value()) != std::string::npos) {
+                return path.substr(0, pos + 1);
+            }
+            return path;
+        }
+        return path.substr(0, pos + 1);
+    };
+    return _traverse(operation, input, options, ctx);
+}
+
+
+/**
  * Traverse the input JSON structure and apply the operation to strings according to options.
  *
  * @param operation The string operation to apply.

@@ -2,6 +2,7 @@
 #include "../ToolsManager.hpp"
 
 #include <iostream>
+#include <format>
 #include <sstream>
 
 using namespace std;
